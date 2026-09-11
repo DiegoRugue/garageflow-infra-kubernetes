@@ -392,9 +392,10 @@
           ]
         },
         "internalApiBaseUrl": {
-          "type": "string",
+          "$ref": "#/$defs/nonEmptyCleanString",
           "format": "uri",
-          "pattern": "^https://"
+          "description": "HTTPS base URL with a hostname of at most 253 characters, the default HTTPS port, and no credentials, non-root path, query value, or fragment value.",
+          "pattern": "^[Hh][Tt][Tt][Pp][Ss]://(?=[^:/?#]{1,253}(?:[:/?#]|$))[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+(?::(?:0*443)?)?/?\\??#?$"
         },
         "tlsServerName": {
           "type": "string",
