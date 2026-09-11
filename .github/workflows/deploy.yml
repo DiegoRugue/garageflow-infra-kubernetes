@@ -1,0 +1,107 @@
+name: Deploy Platform
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --requirement requirements-test.txt
+
+      - name: Validate Python tests and coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/garageflow-platform-contract.coverage
+        run: |
+          python -m coverage run --source=scripts --omit="scripts/tests/*" -m unittest discover -s scripts/tests -v
+          python -m coverage report --fail-under=80
+          python -m unittest discover -s tests -v
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.15.7
+
+      - name: Validate Terraform and deploy script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          terraform fmt -check -recursive infra
+          terraform -chdir=infra/bootstrap/state-backend init -backend=false -input=false
+          terraform -chdir=infra/bootstrap/state-backend validate
+          terraform -chdir=infra/platform init -backend=false -input=false
+          terraform -chdir=infra/platform validate
+          terraform -chdir=infra/platform test
+          bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
+
+  deploy:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      TF_VAR_environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+      TF_VAR_aws_region: us-east-1
+      TF_VAR_owner: ${{ vars.TF_OWNER }}
+      TF_VAR_expires_on: ${{ vars.TF_EXPIRES_ON }}
+      TF_VAR_eks_cluster_role_arn: ${{ secrets.EKS_CLUSTER_ROLE_ARN }}
+      TF_VAR_eks_node_role_arn: ${{ secrets.EKS_NODE_ROLE_ARN }}
+      TF_VAR_kubernetes_version: ${{ vars.EKS_VERSION || '1.36' }}
+      TF_VAR_bootstrap_admin_email: ${{ vars.BOOTSTRAP_ADMIN_EMAIL }}
+      TF_VAR_notification_email: ${{ vars.SNS_NOTIFICATION_EMAIL }}
+      TF_VAR_public_access_cidrs: ${{ vars.EKS_PUBLIC_ACCESS_CIDRS }}
+
+    steps:
+      - name: Checkout trusted branch commit
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.15.7
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with:
+          version: v${{ vars.EKS_VERSION || '1.36' }}.0
+
+      - name: Provision platform and publish metadata contract
+        shell: bash
+        run: bash scripts/deploy-platform.sh

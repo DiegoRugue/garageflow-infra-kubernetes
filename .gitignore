@@ -1,0 +1,23 @@
+# Terraform working data and local state
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Local variable and backend configuration
+*.tfvars
+*.tfvars.json
+*.backend.hcl
+!*.tfvars.example
+
+# Generated deployment contracts and editor files
+contract.json
+outputs.json
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+__pycache__/
+*.py[cod]

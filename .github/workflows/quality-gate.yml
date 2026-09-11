@@ -1,0 +1,57 @@
+name: Quality Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install --requirement requirements-test.txt
+
+      - name: Validate metadata contract tooling and coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/garageflow-platform-contract.coverage
+        run: |
+          python -m coverage run --source=scripts --omit="scripts/tests/*" -m unittest discover -s scripts/tests -v
+          python -m coverage report --fail-under=80
+
+      - name: Validate repository ownership policies
+        run: python -m unittest discover -s tests -v
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.15.7
+
+      - name: Validate Terraform
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          terraform fmt -check -recursive infra
+          terraform -chdir=infra/bootstrap/state-backend init -backend=false -input=false
+          terraform -chdir=infra/bootstrap/state-backend validate
+          terraform -chdir=infra/platform init -backend=false -input=false
+          terraform -chdir=infra/platform validate
+          terraform -chdir=infra/platform test
+
+      - name: Validate deployment script syntax
+        run: bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh

@@ -1,0 +1,8 @@
+aws_region        = "us-east-1"
+state_bucket_name = "garageflow-tfstate-example-9f4c2a7d"
+owner             = "garageflow-team"
+expires_on        = "2027-07-31"
+
+tags = {
+  Environment = "academy"
+}
