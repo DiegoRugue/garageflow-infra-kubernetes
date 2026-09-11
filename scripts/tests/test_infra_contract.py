@@ -1,13 +1,15 @@
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -15,6 +17,25 @@ from jsonschema import Draft202012Validator, FormatChecker
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "scripts" / "infra_contract.py"
 SCHEMA_PATH = ROOT / "contracts" / "infra-contract-v1.schema.json"
+
+
+@contextmanager
+def trusted_temp_directory():
+    with tempfile.TemporaryDirectory() as directory:
+        with patch.dict(os.environ, {"RUNNER_TEMP": directory}):
+            yield Path(directory)
+
+
+def create_directory_link(link: Path, target: Path):
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 def load_module():
@@ -260,12 +281,9 @@ class ContractValidationTests(unittest.TestCase):
             with self.subTest(extra=next(iter(extra))):
                 document = manifest()
                 document["outputs"]["future"] = extra
-                try:
+                with self.assertRaises(self.contract.ContractError) as captured:
                     self.contract.validate_contract(document, "platform", "homologation")
-                except self.contract.ContractError as error:
-                    self.assertNotIn(sensitive_value, str(error))
-                else:
-                    self.fail("secret-like field name was accepted")
+                self.assertNotIn(sensitive_value, str(captured.exception))
 
     def test_secret_validation_does_not_echo_sensitive_field_name_content(self):
         sensitive_value = "DO-NOT-DISCLOSE-in-key-18aa"
@@ -353,8 +371,8 @@ class ContractBuilderAndLoaderTests(unittest.TestCase):
         self.assertNotIn("DO-NOT-DISCLOSE-44c1", str(captured.exception))
 
     def test_load_contract_reads_and_validates_json(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            path = directory / "contract.json"
             path.write_text(json.dumps(manifest()), encoding="utf-8")
 
             loaded = self.contract.load_contract(path, "platform", "homologation")
@@ -363,8 +381,8 @@ class ContractBuilderAndLoaderTests(unittest.TestCase):
 
     def test_load_contract_wraps_invalid_json_without_echoing_contents(self):
         sensitive_value = "DO-NOT-DISCLOSE-7703"
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            path = directory / "contract.json"
             path.write_text('{"password":"' + sensitive_value, encoding="utf-8")
 
             with self.assertRaises(self.contract.ContractError) as captured:
@@ -382,6 +400,166 @@ class ContractBuilderAndLoaderTests(unittest.TestCase):
                 "homologation",
                 "0123456789abcdef0123456789abcdef01234567",
             )
+
+
+class ContractArtifactPathTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = load_module()
+
+    def run_main(self, arguments):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = self.contract.main(arguments)
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_relative_paths_read_and_write_under_runner_temp(self):
+        with trusted_temp_directory() as directory:
+            (directory / "outputs.json").write_text(
+                json.dumps(platform_outputs()),
+                encoding="utf-8",
+            )
+
+            status, stdout, stderr = self.run_main(
+                [
+                    "publish",
+                    "--input",
+                    "outputs.json",
+                    "--output",
+                    "contract.json",
+                    "--producer",
+                    "platform",
+                    "--environment",
+                    "homologation",
+                    "--source-commit",
+                    "0123456789abcdef0123456789abcdef01234567",
+                ]
+            )
+            loaded = self.contract.load_contract(
+                "contract.json",
+                "platform",
+                "homologation",
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout)
+        self.assertEqual("", stderr)
+        self.assertEqual(platform_outputs(), loaded["outputs"])
+
+    def test_load_uses_operating_system_temp_when_runner_temp_is_unset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contract_path = Path(directory) / "contract.json"
+            contract_path.write_text(json.dumps(manifest()), encoding="utf-8")
+            with patch.dict(os.environ):
+                os.environ.pop("RUNNER_TEMP", None)
+                loaded = self.contract.load_contract(
+                    contract_path,
+                    "platform",
+                    "homologation",
+                )
+
+        self.assertEqual(manifest(), loaded)
+
+    def test_load_rejects_parent_traversal_and_absolute_outside_path_without_disclosure(self):
+        sensitive_name = "DO-NOT-DISCLOSE-outside-contract-713d.json"
+        with tempfile.TemporaryDirectory() as parent_directory:
+            parent = Path(parent_directory)
+            trusted = parent / "trusted"
+            trusted.mkdir()
+            outside = parent / sensitive_name
+            outside.write_text(json.dumps(manifest()), encoding="utf-8")
+
+            with patch.dict(os.environ, {"RUNNER_TEMP": str(trusted)}), chdir(trusted):
+                for supplied_path in (f"../{sensitive_name}", outside):
+                    with self.subTest(path_kind=type(supplied_path).__name__):
+                        with self.assertRaises(self.contract.ContractError) as captured:
+                            self.contract.load_contract(
+                                supplied_path,
+                                "platform",
+                                "homologation",
+                            )
+                        self.assertNotIn(sensitive_name, str(captured.exception))
+
+    def test_publish_rejects_outside_input_and_output_paths_without_disclosure(self):
+        sensitive_name = "DO-NOT-DISCLOSE-outside-output-50ac.json"
+        with tempfile.TemporaryDirectory() as parent_directory:
+            parent = Path(parent_directory)
+            trusted = parent / "trusted"
+            trusted.mkdir()
+            inside_input = trusted / "outputs.json"
+            outside_input = parent / sensitive_name
+            inside_input.write_text(json.dumps(platform_outputs()), encoding="utf-8")
+            outside_input.write_text(json.dumps(platform_outputs()), encoding="utf-8")
+
+            with patch.dict(os.environ, {"RUNNER_TEMP": str(trusted)}):
+                cases = (
+                    (outside_input, trusted / "contract.json"),
+                    (inside_input, parent / sensitive_name),
+                )
+                for supplied_input, supplied_output in cases:
+                    with self.subTest(outside="input" if supplied_input == outside_input else "output"):
+                        status, stdout, stderr = self.run_main(
+                            [
+                                "publish",
+                                "--input",
+                                str(supplied_input),
+                                "--output",
+                                str(supplied_output),
+                                "--producer",
+                                "platform",
+                                "--environment",
+                                "homologation",
+                                "--source-commit",
+                                "0123456789abcdef0123456789abcdef01234567",
+                            ]
+                        )
+                        self.assertEqual(2, status)
+                        self.assertEqual("", stdout)
+                        self.assertNotIn(sensitive_name, stderr)
+
+    def test_read_and_write_reject_symlink_escapes(self):
+        with tempfile.TemporaryDirectory() as parent_directory:
+            parent = Path(parent_directory)
+            trusted = parent / "trusted"
+            outside = parent / "outside"
+            trusted.mkdir()
+            outside.mkdir()
+            outside_contract = outside / "contract.json"
+            outside_contract.write_text(json.dumps(manifest()), encoding="utf-8")
+            outside_link = trusted / "outside-link"
+            create_directory_link(outside_link, outside)
+            (trusted / "outputs.json").write_text(
+                json.dumps(platform_outputs()),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"RUNNER_TEMP": str(trusted)}):
+                with self.assertRaises(self.contract.ContractError):
+                    self.contract.load_contract(
+                        outside_link / "contract.json",
+                        "platform",
+                        "homologation",
+                    )
+                status, _, _ = self.run_main(
+                    [
+                        "publish",
+                        "--input",
+                        str(trusted / "outputs.json"),
+                        "--output",
+                        str(outside_link / "published.json"),
+                        "--producer",
+                        "platform",
+                        "--environment",
+                        "homologation",
+                        "--source-commit",
+                        "0123456789abcdef0123456789abcdef01234567",
+                    ]
+                )
+                outside_file_created = (outside / "published.json").exists()
+
+        self.assertEqual(2, status)
+        self.assertFalse(outside_file_created)
 
 
 class ContractSchemaConformanceTests(unittest.TestCase):
@@ -464,10 +642,17 @@ class ContractCliTests(unittest.TestCase):
             check=False,
         )
 
+    def test_help_describes_the_trusted_temporary_path_boundary(self):
+        result = self.run_cli("--help")
+
+        self.assertEqual(0, result.returncode)
+        self.assertIn("RUNNER_TEMP", result.stdout)
+        self.assertIn("operating system temporary directory", result.stdout)
+
     def test_publish_then_validate_round_trip(self):
-        with tempfile.TemporaryDirectory() as directory:
-            outputs_path = Path(directory) / "outputs.json"
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            outputs_path = directory / "outputs.json"
+            contract_path = directory / "contract.json"
             outputs_path.write_text(json.dumps(platform_outputs()), encoding="utf-8")
 
             published = self.run_cli(
@@ -509,9 +694,9 @@ class ContractCliTests(unittest.TestCase):
             )
 
     def test_main_publishes_then_validates_contract_in_process(self):
-        with tempfile.TemporaryDirectory() as directory:
-            outputs_path = Path(directory) / "outputs.json"
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            outputs_path = directory / "outputs.json"
+            contract_path = directory / "contract.json"
             outputs_path.write_text(json.dumps(platform_outputs()), encoding="utf-8")
             publish_stdout = io.StringIO()
             publish_stderr = io.StringIO()
@@ -558,9 +743,9 @@ class ContractCliTests(unittest.TestCase):
 
     def test_main_returns_two_for_unreadable_publish_input_without_echoing_path(self):
         sensitive_value = "DO-NOT-DISCLOSE-path-971e"
-        with tempfile.TemporaryDirectory() as directory:
-            missing_path = Path(directory) / sensitive_value
-            output_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            missing_path = directory / sensitive_value
+            output_path = directory / "contract.json"
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 status = self.contract.main(
@@ -585,8 +770,8 @@ class ContractCliTests(unittest.TestCase):
 
     def test_cli_returns_nonzero_without_disclosing_invalid_secret_value(self):
         sensitive_value = "DO-NOT-DISCLOSE-f42e"
-        with tempfile.TemporaryDirectory() as directory:
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            contract_path = directory / "contract.json"
             document = manifest()
             document["outputs"]["password"] = sensitive_value
             contract_path.write_text(json.dumps(document), encoding="utf-8")
@@ -607,8 +792,8 @@ class ContractCliTests(unittest.TestCase):
 
     def test_cli_redacts_arbitrary_ancestor_keys_for_nested_secret_fields(self):
         sensitive_value = "DO-NOT-DISCLOSE-parent-cli-13bf\nforged-log"
-        with tempfile.TemporaryDirectory() as directory:
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            contract_path = directory / "contract.json"
             document = manifest()
             document["outputs"][sensitive_value] = [{"password": "synthetic"}]
             contract_path.write_text(json.dumps(document), encoding="utf-8")
@@ -630,8 +815,8 @@ class ContractCliTests(unittest.TestCase):
 
     def test_cli_does_not_echo_invalid_expected_producer(self):
         sensitive_value = "DO-NOT-DISCLOSE-producer-a6e9"
-        with tempfile.TemporaryDirectory() as directory:
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            contract_path = directory / "contract.json"
             contract_path.write_text(json.dumps(manifest()), encoding="utf-8")
 
             result = self.run_cli(
@@ -651,8 +836,8 @@ class ContractCliTests(unittest.TestCase):
     def test_cli_argument_errors_do_not_echo_unrecognized_values(self):
         sensitive_value = "DO-NOT-DISCLOSE-argument-4c91"
 
-        with tempfile.TemporaryDirectory() as directory:
-            contract_path = Path(directory) / "contract.json"
+        with trusted_temp_directory() as directory:
+            contract_path = directory / "contract.json"
             contract_path.write_text(json.dumps(manifest()), encoding="utf-8")
             result = self.run_cli(
                 "validate",

@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Build and validate versioned GarageFlow infrastructure metadata contracts."""
+"""Build and validate GarageFlow infrastructure metadata contracts.
+
+CLI file paths must resolve under RUNNER_TEMP when it is configured, or under
+the operating system temporary directory otherwise. Relative paths resolve
+from that trusted temporary directory.
+"""
 
 from __future__ import annotations
 
 import argparse
 import copy
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -16,6 +23,9 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = "1.0"
 PRODUCERS = ("platform", "database", "ingress", "serverless")
 ENVIRONMENTS = ("homologation", "production")
+_CONTRACT_PATH = "contract"
+_OUTPUTS_PATH = f"{_CONTRACT_PATH}.outputs"
+_PUBLISHER_OUTPUTS_PATH = "outputs"
 
 OUTPUT_FIELDS = {
     "platform": (
@@ -94,7 +104,7 @@ _ECR_URL_PATTERN = re.compile(
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*$"
 )
 _CLUSTER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
-_DATABASE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,62}$")
+_DATABASE_NAME_PATTERN = re.compile(r"^[A-Za-z]\w{0,62}$", re.ASCII)
 _ARN_PATTERN = re.compile(
     r"^arn:(?P<partition>aws(?:-us-gov|-cn)?):(?P<service>[a-z0-9-]+):"
     r"(?P<region>[a-z0-9-]+):(?P<account>\d{12}):(?P<resource>\S+)$"
@@ -102,6 +112,7 @@ _ARN_PATTERN = re.compile(
 _LAMBDA_ALIAS_RESOURCE_PATTERN = re.compile(
     r"^function:[A-Za-z0-9_-]{1,64}:(?!\d+$)[A-Za-z0-9_-]{1,128}$"
 )
+_ARTIFACT_PATH_ERROR = "artifact path must stay within the trusted temporary directory"
 
 
 class ContractError(ValueError):
@@ -124,8 +135,28 @@ def _required_mapping(value: object, path: str) -> dict:
     return value
 
 
+def _resolve_artifact_path(path) -> Path:
+    configured_base = os.environ.get("RUNNER_TEMP")
+    base_path = Path(configured_base) if configured_base else Path(tempfile.gettempdir())
+    try:
+        trusted_base = base_path.resolve(strict=True)
+        supplied_path = Path(path)
+        candidate = supplied_path if supplied_path.is_absolute() else trusted_base / supplied_path
+        resolved_path = candidate.resolve(strict=False)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise ContractError(_ARTIFACT_PATH_ERROR) from error
+
+    if not trusted_base.is_dir() or resolved_path == trusted_base:
+        raise ContractError(_ARTIFACT_PATH_ERROR)
+    try:
+        resolved_path.relative_to(trusted_base)
+    except ValueError as error:
+        raise ContractError(_ARTIFACT_PATH_ERROR) from error
+    return resolved_path
+
+
 def _required_string(value: object, path: str) -> str:
-    if type(value) is not str or not value:
+    if not isinstance(value, str) or not value:
         _fail(path, "must be a non-empty string")
     if value != value.strip():
         _fail(path, "must not contain surrounding whitespace")
@@ -212,27 +243,44 @@ def _normalized_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", key.lower())
 
 
-def _reject_secret_like_fields(
+def _check_secret_field_name(
+    key: object,
+    allowed_secret_references: set[str],
+    references_allowed: bool,
+    path: str,
+) -> str:
+    if not isinstance(key, str):
+        _fail(path, "field names must be strings")
+    if references_allowed and key in allowed_secret_references:
+        return key
+    normalized = _normalized_key(key)
+    if any(part in normalized for part in _SECRET_NAME_PARTS):
+        _fail(path, "contains a forbidden secret-like field name")
+    return key
+
+
+def _check_secret_fields(
     value: object,
     allowed_secret_references: set[str],
-    path: str = "contract",
+    path: str = _CONTRACT_PATH,
 ) -> None:
-    if type(value) is dict:
-        for key, child in value.items():
-            if type(key) is not str:
-                _fail(path, "field names must be strings")
-            normalized = _normalized_key(key)
-            approved_reference = (
-                path in ("contract.outputs", "outputs")
-                and key in allowed_secret_references
-            )
-            if not approved_reference and any(part in normalized for part in _SECRET_NAME_PARTS):
-                _fail(path, "contains a forbidden secret-like field name")
-            child_path = f"{path}.{key if key in _TRUSTED_FIELD_NAMES else '<extension>'}"
-            _reject_secret_like_fields(child, allowed_secret_references, child_path)
-    elif type(value) is list:
+    if type(value) is list:
         for index, child in enumerate(value):
-            _reject_secret_like_fields(child, allowed_secret_references, f"{path}[{index}]")
+            _check_secret_fields(child, allowed_secret_references, f"{path}[{index}]")
+        return
+    if type(value) is not dict:
+        return
+
+    references_allowed = path in (_OUTPUTS_PATH, _PUBLISHER_OUTPUTS_PATH)
+    for raw_key, child in value.items():
+        key = _check_secret_field_name(
+            raw_key,
+            allowed_secret_references,
+            references_allowed,
+            path,
+        )
+        child_path = f"{path}.{key if key in _TRUSTED_FIELD_NAMES else '<extension>'}"
+        _check_secret_fields(child, allowed_secret_references, child_path)
 
 
 def _validate_metadata(document: dict, producer: str, environment: str) -> dict:
@@ -272,11 +320,11 @@ def _validate_metadata(document: dict, producer: str, environment: str) -> dict:
     except ValueError:
         _fail("contract.publishedAt", "must be a valid UTC RFC3339 timestamp")
 
-    return _required_mapping(_required(document, "outputs", "contract"), "contract.outputs")
+    return _required_mapping(_required(document, "outputs", _CONTRACT_PATH), _OUTPUTS_PATH)
 
 
 def _validate_platform(outputs: dict) -> None:
-    base = "contract.outputs"
+    base = _OUTPUTS_PATH
     aws_region = _match(
         _required(outputs, "awsRegion", base),
         f"{base}.awsRegion",
@@ -327,7 +375,7 @@ def _validate_platform(outputs: dict) -> None:
 
 
 def _validate_database(outputs: dict) -> None:
-    base = "contract.outputs"
+    base = _OUTPUTS_PATH
     _validate_hostname(_required(outputs, "databaseHost", base), f"{base}.databaseHost")
     port = _required(outputs, "databasePort", base)
     if type(port) is not int or not 1 <= port <= 65535:
@@ -353,7 +401,7 @@ def _validate_database(outputs: dict) -> None:
 
 
 def _validate_ingress(outputs: dict) -> None:
-    base = "contract.outputs"
+    base = _OUTPUTS_PATH
     _validate_arn(
         _required(outputs, "listenerArn", base),
         f"{base}.listenerArn",
@@ -365,7 +413,7 @@ def _validate_ingress(outputs: dict) -> None:
 
 
 def _validate_serverless(outputs: dict) -> None:
-    base = "contract.outputs"
+    base = _OUTPUTS_PATH
     for field in ("customerAuthenticationAliasArn", "requestAuthorizerAliasArn"):
         arn = _validate_arn(_required(outputs, field, base), f"{base}.{field}", "lambda", "function:")
         resource = _ARN_PATTERN.fullmatch(arn).group("resource")
@@ -384,10 +432,10 @@ _OUTPUT_VALIDATORS = {
 def validate_contract(document: dict, producer: str, environment: str) -> dict:
     """Validate and return an independent copy of a complete manifest."""
 
-    contract = _required_mapping(document, "contract")
+    contract = _required_mapping(document, _CONTRACT_PATH)
     if producer not in PRODUCERS:
         _fail("producer", "unsupported expected producer")
-    _reject_secret_like_fields(contract, _SECRET_REFERENCE_FIELDS[producer])
+    _check_secret_fields(contract, _SECRET_REFERENCE_FIELDS[producer])
     outputs = _validate_metadata(contract, producer, environment)
     _OUTPUT_VALIDATORS[producer](outputs)
     return copy.deepcopy(contract)
@@ -397,7 +445,8 @@ def load_contract(path, producer: str, environment: str) -> dict:
     """Read a JSON manifest from path and validate it for its consumer."""
 
     try:
-        with Path(path).open("r", encoding="utf-8") as stream:
+        contract_path = _resolve_artifact_path(path)
+        with contract_path.open("r", encoding="utf-8") as stream:
             document = json.load(stream)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ContractError("contract file could not be read as JSON") from error
@@ -413,10 +462,14 @@ def build_contract(
 ) -> dict:
     """Build a validated v1 manifest from a flat Terraform deployment_outputs object."""
 
-    flat_outputs = _required_mapping(outputs, "outputs")
+    flat_outputs = _required_mapping(outputs, _PUBLISHER_OUTPUTS_PATH)
     if producer not in PRODUCERS:
         _fail("producer", "unsupported producer")
-    _reject_secret_like_fields(flat_outputs, _SECRET_REFERENCE_FIELDS[producer], "outputs")
+    _check_secret_fields(
+        flat_outputs,
+        _SECRET_REFERENCE_FIELDS[producer],
+        _PUBLISHER_OUTPUTS_PATH,
+    )
     selected_outputs = {
         field: copy.deepcopy(flat_outputs[field])
         for field in OUTPUT_FIELDS[producer]
@@ -438,7 +491,8 @@ def build_contract(
 
 def _read_outputs(path: str) -> dict:
     try:
-        with Path(path).open("r", encoding="utf-8") as stream:
+        outputs_path = _resolve_artifact_path(path)
+        with outputs_path.open("r", encoding="utf-8") as stream:
             return _required_mapping(json.load(stream), "outputs")
     except ContractError:
         raise
@@ -448,7 +502,7 @@ def _read_outputs(path: str) -> dict:
 
 def _write_contract(path: str, document: dict) -> None:
     try:
-        destination = Path(path)
+        destination = _resolve_artifact_path(path)
         with destination.open("w", encoding="utf-8", newline="\n") as stream:
             json.dump(document, stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -461,13 +515,13 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate", help="validate a metadata contract")
-    validate.add_argument("--file", required=True)
+    validate.add_argument("--file", required=True, help="contract path under the trusted temporary directory")
     validate.add_argument("--producer", required=True)
     validate.add_argument("--environment", required=True)
 
     publish = subparsers.add_parser("publish", help="build and write a metadata contract")
-    publish.add_argument("--input", required=True)
-    publish.add_argument("--output", required=True)
+    publish.add_argument("--input", required=True, help="outputs path under the trusted temporary directory")
+    publish.add_argument("--output", required=True, help="contract path under the trusted temporary directory")
     publish.add_argument("--producer", required=True)
     publish.add_argument("--environment", required=True)
     publish.add_argument("--source-commit", required=True)
