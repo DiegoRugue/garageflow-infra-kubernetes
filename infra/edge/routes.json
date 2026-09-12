@@ -1,0 +1,262 @@
+{
+  "DELETE /customers/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /inventory-items/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /services/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /users/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /vehicle-brands/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /vehicle-colors/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /vehicle-models/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "DELETE /vehicles/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /customers": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /customers/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /inventory-items": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /inventory-items/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /me/work-orders": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /me/work-orders/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /services": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /services/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /users": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-brands": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-brands/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-colors": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-colors/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-models": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicle-models/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicles": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /vehicles/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /work-orders": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /work-orders/average-service-time": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /work-orders/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /work-orders/{id}/status": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PATCH /customers/{id}/status": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PATCH /inventory-items/{id}/stock": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /auth/customers/token": {
+    "integration": "authentication",
+    "authorization": "NONE"
+  },
+  "POST /auth/login": {
+    "integration": "api",
+    "authorization": "NONE"
+  },
+  "POST /customers": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /customers/{customerId}/portal-user": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /inventory-items": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /me/work-orders/{workOrderId}/estimates/{estimateId}/approve": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /me/work-orders/{workOrderId}/estimates/{estimateId}/reject": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /services": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /users": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /vehicle-brands": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /vehicle-colors": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /vehicle-models": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /vehicles": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /webhooks/estimate-decisions": {
+    "integration": "api",
+    "authorization": "NONE"
+  },
+  "POST /work-orders": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/intake": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/cancel": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/deliver": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates/{estimateId}/inventory-items": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates/{estimateId}/services": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates/{estimateId}/services/{lineId}/complete": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates/{estimateId}/services/{lineId}/start": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/estimates/{estimateId}/submit": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/start-diagnosis": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /customers/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /inventory-items/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /services/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /users/me": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /users/me/password": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /vehicle-brands/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /vehicle-colors/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /vehicle-models/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "PUT /vehicles/{id}": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  }
+}

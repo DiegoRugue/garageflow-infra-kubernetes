@@ -1,6 +1,11 @@
 name: Quality Gate
 
 on:
+  workflow_call:
+    outputs:
+      source_commit:
+        description: Exact platform source commit validated by this quality gate
+        value: ${{ jobs.quality-gate.outputs.source_commit }}
   pull_request:
   push:
     branches:
@@ -14,10 +19,20 @@ jobs:
   quality-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      source_commit: ${{ steps.revision.outputs.commit }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          repository: DiegoRugue/garageflow-infra-kubernetes
+          ref: ${{ github.repository == 'DiegoRugue/garageflow-infra-kubernetes' && github.sha || github.ref_name }}
+
+      - name: Record checked revision
+        id: revision
+        shell: bash
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -52,6 +67,11 @@ jobs:
           terraform -chdir=infra/platform init -backend=false -input=false
           terraform -chdir=infra/platform validate
           terraform -chdir=infra/platform test
+          for root in ingress edge; do
+            terraform -chdir="infra/${root}" init -backend=false -input=false
+            terraform -chdir="infra/${root}" validate
+            terraform -chdir="infra/${root}" test
+          done
 
       - name: Validate deployment script syntax
-        run: bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
+        run: bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh scripts/deploy-ingress.sh scripts/deploy-edge.sh scripts/deploy-edge-component.sh

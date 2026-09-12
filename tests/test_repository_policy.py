@@ -39,7 +39,9 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn('resource "aws_nat_gateway"', network)
 
     def test_empty_http_api_has_no_edge_or_compute_resources(self) -> None:
-        terraform = self.terraform_text()
+        terraform = "\n".join(path.read_text(encoding="utf-8")
+                              for directory in (INFRA_ROOT / "platform", INFRA_ROOT / "modules")
+                              for path in directory.rglob("*.tf") if ".terraform" not in path.parts)
         forbidden_resource_types = (
             "aws_apigatewayv2_route",
             "aws_apigatewayv2_integration",
@@ -50,6 +52,9 @@ class RepositoryPolicyTests(unittest.TestCase):
         for resource_type in forbidden_resource_types:
             with self.subTest(resource_type=resource_type):
                 self.assertNotRegex(terraform, rf'resource\s+"{resource_type}"')
+
+    def test_lambda_resources_belong_only_to_the_serverless_repository(self) -> None:
+        self.assertNotRegex(self.terraform_text(), r'resource\s+"aws_lambda_')
 
     def test_deploy_is_branch_gated_and_publishes_revision_before_stable_contract(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")

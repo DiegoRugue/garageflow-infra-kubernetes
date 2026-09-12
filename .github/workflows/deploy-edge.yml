@@ -1,0 +1,63 @@
+name: Deploy Private Ingress or Edge
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Component to reconcile (edge requires application and serverless deployment)
+        type: choice
+        options: [edge, ingress]
+        default: edge
+        required: true
+  workflow_call:
+    inputs:
+      component:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.component || 'edge' }}-${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/quality-gate.yml
+
+  deploy:
+    needs: quality-gate
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      DEPLOY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+      TF_VAR_owner: ${{ vars.TF_OWNER }}
+      TF_VAR_expires_on: ${{ vars.TF_EXPIRES_ON }}
+      DEPLOY_COMPONENT: ${{ inputs.component || 'edge' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: DiegoRugue/garageflow-infra-kubernetes
+          ref: ${{ needs.quality-gate.outputs.source_commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.15.7
+      - name: Apply validated component
+        shell: bash
+        run: bash scripts/deploy-edge-component.sh "$DEPLOY_COMPONENT"
