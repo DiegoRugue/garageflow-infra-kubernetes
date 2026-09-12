@@ -55,6 +55,11 @@ jobs:
           terraform -chdir=infra/platform init -backend=false -input=false
           terraform -chdir=infra/platform validate
           terraform -chdir=infra/platform test
+          for root in ingress edge; do
+            terraform -chdir="infra/${root}" init -backend=false -input=false
+            terraform -chdir="infra/${root}" validate
+            terraform -chdir="infra/${root}" test
+          done
           bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
 
   deploy:
@@ -105,3 +110,10 @@ jobs:
       - name: Provision platform and publish metadata contract
         shell: bash
         run: bash scripts/deploy-platform.sh
+
+  ingress:
+    needs: deploy
+    uses: ./.github/workflows/deploy-edge.yml
+    with:
+      component: ingress
+    secrets: inherit

@@ -608,6 +608,81 @@ class ContractSchemaConformanceTests(unittest.TestCase):
             with self.subTest(producer=producer):
                 self.validator.validate(manifest(producer=producer, outputs=outputs))
 
+    def test_schema_and_python_accept_https_base_urls(self):
+        longest_hostname = ".".join(["a" * 63] * 3 + ["b" * 61])
+        valid_urls = (
+            "https://api.internal.example",
+            "https://api.internal.example/",
+            "https://api.internal.example:443",
+            "https://api.internal.example:443/",
+            "HTTPS://API.Internal.Example/",
+            "hTtPs://api.internal.example/",
+            "https://api-v1.internal.example/",
+            "https://a.b",
+            "https://192.0.2.1/",
+            f"https://{longest_hostname}:443/",
+            # urlsplit treats these ports and empty components as an HTTPS origin.
+            "https://api.internal.example:",
+            "https://api.internal.example:0443/",
+            "https://api.internal.example?",
+            "https://api.internal.example#",
+            "https://api.internal.example/?#",
+        )
+        for url in valid_urls:
+            with self.subTest(url=url):
+                outputs = producer_outputs()["ingress"]
+                outputs["internalApiBaseUrl"] = url
+                document = manifest(producer="ingress", outputs=outputs)
+
+                self.assertEqual(
+                    document,
+                    self.contract.validate_contract(document, "ingress", "homologation"),
+                )
+                self.validator.validate(document)
+
+    def test_schema_and_python_reject_invalid_https_base_urls(self):
+        oversized_hostname = ".".join(["a" * 63] * 3 + ["b" * 62])
+        invalid_urls = (
+            "https://api.internal.example/v1",
+            "https://api.internal.example//",
+            "https://user@api.internal.example",
+            "https://user:password@api.internal.example",
+            "https://@api.internal.example",
+            "https://api.internal.example?version=1",
+            "https://api.internal.example/#section",
+            "https://api.internal.example:8443",
+            "https://api.internal.example:80/",
+            "https://api.internal.example:0",
+            "https://api.internal.example:65536",
+            "https://api.internal.example:invalid",
+            "http://api.internal.example",
+            "https:///api.internal.example",
+            "https://localhost",
+            "https://api.internal.example.",
+            "https://api..example",
+            "https://-api.internal.example",
+            "https://api-.internal.example",
+            "https://api_internal.example",
+            "https://[2001:db8::1]/",
+            f"https://{'a' * 64}.example",
+            f"https://{oversized_hostname}",
+            " https://api.internal.example",
+            "https://api.internal.example\n",
+            "https://api.\tinternal.example",
+            "https://api.internal.example/\u007f",
+        )
+        validator_without_formats = Draft202012Validator(self.schema)
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                outputs = producer_outputs()["ingress"]
+                outputs["internalApiBaseUrl"] = url
+                document = manifest(producer="ingress", outputs=outputs)
+
+                with self.assertRaises(self.contract.ContractError):
+                    self.contract.validate_contract(document, "ingress", "homologation")
+                self.assertFalse(self.validator.is_valid(document))
+                self.assertFalse(validator_without_formats.is_valid(document))
+
     def test_schema_rejects_incomplete_or_wrong_service_resource_arns(self):
         invalid_documents = []
         for field, value in (
