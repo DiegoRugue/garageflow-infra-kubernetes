@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 
 SCHEMA_VERSION = "1.0"
+INGRESS_SCHEMA_VERSION = "2.0"
 PRODUCERS = ("platform", "database", "ingress", "serverless")
 ENVIRONMENTS = ("homologation", "production")
 _CONTRACT_PATH = "contract"
@@ -55,6 +56,10 @@ OUTPUT_FIELDS = {
     "ingress": ("listenerArn", "internalApiBaseUrl", "tlsServerName"),
     "serverless": ("customerAuthenticationAliasArn", "requestAuthorizerAliasArn"),
 }
+INGRESS_V2_FIELDS = (
+    "listenerArn", "internalApiBaseUrl", "transport",
+    "authenticationSecurityGroupId", "vpcLinkSecurityGroupId", "tlsServerName",
+)
 _TRUSTED_FIELD_NAMES = frozenset(
     {
         "schemaVersion",
@@ -63,7 +68,7 @@ _TRUSTED_FIELD_NAMES = frozenset(
         "sourceCommit",
         "publishedAt",
         "outputs",
-    }.union(*(set(fields) for fields in OUTPUT_FIELDS.values()))
+    }.union(*(set(fields) for fields in OUTPUT_FIELDS.values()), INGRESS_V2_FIELDS)
 )
 
 _SECRET_REFERENCE_FIELDS = {
@@ -113,6 +118,14 @@ _LAMBDA_ALIAS_RESOURCE_PATTERN = re.compile(
     r"^function:[A-Za-z0-9_-]{1,64}:(?!\d+$)[A-Za-z0-9_-]{1,128}$"
 )
 _ARTIFACT_PATH_ERROR = "artifact path must stay within the trusted temporary directory"
+_BASE_HOST_PATTERN = (
+    r"(?=[^:/?#]{1,253}(?:[:/]|$))[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+_INGRESS_URL_PATTERNS = {
+    "http": re.compile(r"[Hh][Tt][Tt][Pp]://" + _BASE_HOST_PATTERN + r"(?::80)?/?"),
+    "https": re.compile(r"[Hh][Tt][Tt][Pp][Ss]://" + _BASE_HOST_PATTERN + r"(?::443)?/?"),
+}
 
 
 class ContractError(ValueError):
@@ -283,6 +296,13 @@ def _check_secret_fields(
         _check_secret_fields(child, allowed_secret_references, child_path)
 
 
+def _validate_schema_version(schema_version: object, producer: str) -> None:
+    if schema_version != SCHEMA_VERSION and not (
+        producer == "ingress" and schema_version == INGRESS_SCHEMA_VERSION
+    ):
+        _fail("contract.schemaVersion", "unsupported schema version for producer")
+
+
 def _validate_metadata(document: dict, producer: str, environment: str) -> dict:
     if producer not in PRODUCERS:
         _fail("producer", "unsupported expected producer")
@@ -290,8 +310,7 @@ def _validate_metadata(document: dict, producer: str, environment: str) -> dict:
         _fail("environment", "unsupported expected environment")
 
     schema_version = _required_string(_required(document, "schemaVersion", "contract"), "contract.schemaVersion")
-    if schema_version != SCHEMA_VERSION:
-        _fail("contract.schemaVersion", "unsupported schema version")
+    _validate_schema_version(schema_version, producer)
 
     declared_environment = _required_string(
         _required(document, "environment", "contract"), "contract.environment"
@@ -412,6 +431,28 @@ def _validate_ingress(outputs: dict) -> None:
     _validate_hostname(_required(outputs, "tlsServerName", base), f"{base}.tlsServerName")
 
 
+def _validate_ingress_v2(outputs: dict) -> None:
+    base = _OUTPUTS_PATH
+    _validate_arn(
+        _required(outputs, "listenerArn", base), f"{base}.listenerArn",
+        "elasticloadbalancing", "listener/",
+    )
+    transport = _required_string(_required(outputs, "transport", base), f"{base}.transport")
+    if transport not in _INGRESS_URL_PATTERNS:
+        _fail(f"{base}.transport", "must be http or https")
+    _match(
+        _required(outputs, "internalApiBaseUrl", base), f"{base}.internalApiBaseUrl",
+        _INGRESS_URL_PATTERNS[transport], "must be a base URL matching the declared transport and default port",
+    )
+    for field in ("authenticationSecurityGroupId", "vpcLinkSecurityGroupId"):
+        _match(_required(outputs, field, base), f"{base}.{field}", _SECURITY_GROUP_PATTERN,
+               "must be a security group ID")
+    if transport == "https":
+        _validate_hostname(_required(outputs, "tlsServerName", base), f"{base}.tlsServerName")
+    elif "tlsServerName" in outputs:
+        _fail(f"{base}.tlsServerName", "must be absent for HTTP transport")
+
+
 def _validate_serverless(outputs: dict) -> None:
     base = _OUTPUTS_PATH
     for field in ("customerAuthenticationAliasArn", "requestAuthorizerAliasArn"):
@@ -429,7 +470,9 @@ _OUTPUT_VALIDATORS = {
 }
 
 
-def validate_contract(document: dict, producer: str, environment: str) -> dict:
+def validate_contract(
+    document: dict, producer: str, environment: str, schema_version: str | None = None,
+) -> dict:
     """Validate and return an independent copy of a complete manifest."""
 
     contract = _required_mapping(document, _CONTRACT_PATH)
@@ -437,11 +480,16 @@ def validate_contract(document: dict, producer: str, environment: str) -> dict:
         _fail("producer", "unsupported expected producer")
     _check_secret_fields(contract, _SECRET_REFERENCE_FIELDS[producer])
     outputs = _validate_metadata(contract, producer, environment)
-    _OUTPUT_VALIDATORS[producer](outputs)
+    if schema_version is not None and contract["schemaVersion"] != schema_version:
+        _fail("contract.schemaVersion", "does not match expected schema version")
+    if contract["schemaVersion"] == INGRESS_SCHEMA_VERSION:
+        _validate_ingress_v2(outputs)
+    else:
+        _OUTPUT_VALIDATORS[producer](outputs)
     return copy.deepcopy(contract)
 
 
-def load_contract(path, producer: str, environment: str) -> dict:
+def load_contract(path, producer: str, environment: str, schema_version: str | None = None) -> dict:
     """Read a JSON manifest from path and validate it for its consumer."""
 
     try:
@@ -450,7 +498,7 @@ def load_contract(path, producer: str, environment: str) -> dict:
             document = json.load(stream)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ContractError("contract file could not be read as JSON") from error
-    return validate_contract(document, producer, environment)
+    return validate_contract(document, producer, environment, schema_version)
 
 
 def build_contract(
@@ -459,12 +507,14 @@ def build_contract(
     environment: str,
     source_commit: str,
     published_at: str | None = None,
+    schema_version: str = SCHEMA_VERSION,
 ) -> dict:
-    """Build a validated v1 manifest from a flat Terraform deployment_outputs object."""
+    """Build a validated manifest; v1 remains the default for existing publishers."""
 
     flat_outputs = _required_mapping(outputs, _PUBLISHER_OUTPUTS_PATH)
     if producer not in PRODUCERS:
         _fail("producer", "unsupported producer")
+    _validate_schema_version(schema_version, producer)
     _check_secret_fields(
         flat_outputs,
         _SECRET_REFERENCE_FIELDS[producer],
@@ -472,14 +522,14 @@ def build_contract(
     )
     selected_outputs = {
         field: copy.deepcopy(flat_outputs[field])
-        for field in OUTPUT_FIELDS[producer]
+        for field in (INGRESS_V2_FIELDS if schema_version == INGRESS_SCHEMA_VERSION else OUTPUT_FIELDS[producer])
         if field in flat_outputs
     }
     timestamp = published_at
     if timestamp is None:
         timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     document = {
-        "schemaVersion": SCHEMA_VERSION,
+        "schemaVersion": schema_version,
         "environment": environment,
         "producer": producer,
         "sourceCommit": source_commit,
@@ -518,6 +568,7 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--file", required=True, help="contract path under the trusted temporary directory")
     validate.add_argument("--producer", required=True)
     validate.add_argument("--environment", required=True)
+    validate.add_argument("--schema-version", help="require this exact supported schema version")
 
     publish = subparsers.add_parser("publish", help="build and write a metadata contract")
     publish.add_argument("--input", required=True, help="outputs path under the trusted temporary directory")
@@ -525,6 +576,7 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--producer", required=True)
     publish.add_argument("--environment", required=True)
     publish.add_argument("--source-commit", required=True)
+    publish.add_argument("--schema-version", default=SCHEMA_VERSION, help="manifest version; defaults to 1.0")
     return parser
 
 
@@ -533,7 +585,7 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         options = parser.parse_args(arguments)
         if options.command == "validate":
-            document = load_contract(options.file, options.producer, options.environment)
+            document = load_contract(options.file, options.producer, options.environment, options.schema_version)
             json.dump(document, sys.stdout, separators=(",", ":"), sort_keys=True)
             sys.stdout.write("\n")
         else:
@@ -543,6 +595,7 @@ def main(arguments: list[str] | None = None) -> int:
                 options.producer,
                 options.environment,
                 options.source_commit,
+                schema_version=options.schema_version,
             )
             _write_contract(options.output, document)
         return 0
