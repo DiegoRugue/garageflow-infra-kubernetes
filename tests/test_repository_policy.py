@@ -80,6 +80,13 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("C:/projects/", source)
         self.assertNotIn("C:\\projects\\", source)
 
+    def test_cross_repository_gate_checks_central_main_and_deploys_checked_commit(self) -> None:
+        gate = (REPOSITORY_ROOT / ".github/workflows/quality-gate.yml").read_text()
+        edge = (REPOSITORY_ROOT / ".github/workflows/deploy-edge.yml").read_text()
+        self.assertIn("github.repository == 'DiegoRugue/garageflow-infra-kubernetes' && github.sha || 'main'", gate)
+        self.assertIn("ref: ${{ needs.quality-gate.outputs.source_commit }}", edge)
+        self.assertIn("github.ref_name == 'main' && 'production' || 'homologation'", edge)
+
 
 if __name__ == "__main__":
     unittest.main()
