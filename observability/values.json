@@ -22,6 +22,17 @@
   },
   "kube-state-metrics": {
     "enabled": true,
+    "collectors": [
+      "daemonsets",
+      "deployments",
+      "horizontalpodautoscalers",
+      "jobs",
+      "namespaces",
+      "nodes",
+      "pods",
+      "replicasets",
+      "statefulsets"
+    ],
     "metricLabelsAllowlist": [],
     "metricAnnotationsAllowList": [],
     "resources": {

@@ -72,6 +72,11 @@ class ObservabilityTests(unittest.TestCase):
 
     def test_receiver_contract_and_bounded_export(self):
         values = json.loads((deploy.ROOT / "observability/values.json").read_text())
+        self.assertEqual(
+            ["daemonsets", "deployments", "horizontalpodautoscalers", "jobs", "namespaces", "nodes", "pods", "replicasets", "statefulsets"],
+            values["kube-state-metrics"]["collectors"],
+            "Explicit discovery allowlist must exclude Secrets and ConfigMaps",
+        )
         self.assertFalse(values["receivers"]["filelog"]["enabled"])
         config = values["deployment"]["configMap"]["extraConfig"]
         self.assertEqual("0.0.0.0:4318", config["receivers"]["otlp/app"]["protocols"]["http"]["endpoint"])
