@@ -1,0 +1,61 @@
+name: Deploy Observability
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability-${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/quality-gate.yml
+  deploy:
+    needs: quality-gate
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+      EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      DEPLOY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
+      NEW_RELIC_ENABLED: ${{ vars.NEW_RELIC_ENABLED || 'false' }}
+      NEW_RELIC_ACCOUNT_ID: ${{ vars.NEW_RELIC_ACCOUNT_ID }}
+      NEW_RELIC_REGION: ${{ vars.NEW_RELIC_REGION }}
+    steps:
+      - name: Checkout verified trusted commit
+        uses: actions/checkout@v5
+        with:
+          repository: DiegoRugue/garageflow-infra-kubernetes
+          ref: ${{ needs.quality-gate.outputs.source_commit }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Setup kubectl
+        if: env.NEW_RELIC_ENABLED == 'true'
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with:
+          version: v${{ vars.EKS_VERSION || '1.36' }}.0
+      - name: Setup Helm
+        if: env.NEW_RELIC_ENABLED == 'true'
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.19.0
+      - name: Install private New Relic collectors
+        env:
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: python scripts/deploy_observability.py
+      - name: Restore owned EKS endpoint access lease
+        if: always()
+        run: python scripts/deploy_observability.py cleanup

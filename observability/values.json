@@ -1,0 +1,202 @@
+{
+  "customSecretName": "newrelic-license",
+  "customSecretLicenseKey": "licenseKey",
+  "lowDataMode": true,
+  "images": {
+    "collector": {
+      "repository": "newrelic/nrdot-collector",
+      "tag": "1.19.0"
+    },
+    "kubectl": {
+      "repository": "alpine/k8s",
+      "tag": "1.36.0"
+    }
+  },
+  "receivers": {
+    "filelog": {
+      "enabled": false
+    },
+    "k8sEvents": {
+      "enabled": false
+    }
+  },
+  "kube-state-metrics": {
+    "enabled": true,
+    "collectors": [
+      "daemonsets",
+      "deployments",
+      "horizontalpodautoscalers",
+      "jobs",
+      "namespaces",
+      "nodes",
+      "pods",
+      "replicasets",
+      "statefulsets"
+    ],
+    "metricLabelsAllowlist": [],
+    "metricAnnotationsAllowList": [],
+    "resources": {
+      "requests": {
+        "cpu": "25m",
+        "memory": "32Mi"
+      },
+      "limits": {
+        "cpu": "100m",
+        "memory": "64Mi"
+      }
+    }
+  },
+  "daemonset": {
+    "resources": {
+      "requests": {
+        "cpu": "100m",
+        "memory": "128Mi"
+      },
+      "limits": {
+        "cpu": "500m",
+        "memory": "192Mi"
+      }
+    },
+    "envs": [
+      {
+        "name": "GOMEMLIMIT",
+        "value": "144MiB"
+      }
+    ],
+    "extraArgs": [
+      "--config=yaml:exporters::otlp_http/newrelic::endpoint: https://otlp.nr-data.net",
+      "--config=yaml:exporters::otlp_http/newrelic::timeout: 10s",
+      "--config=yaml:exporters::otlp_http/newrelic::sending_queue::queue_size: 64",
+      "--config=yaml:exporters::otlp_http/newrelic::sending_queue::num_consumers: 2",
+      "--config=yaml:exporters::otlp_http/newrelic::retry_on_failure::max_elapsed_time: 60s"
+    ]
+  },
+  "deployment": {
+    "resources": {
+      "requests": {
+        "cpu": "100m",
+        "memory": "192Mi"
+      },
+      "limits": {
+        "cpu": "500m",
+        "memory": "256Mi"
+      }
+    },
+    "envs": [
+      {
+        "name": "GOMEMLIMIT",
+        "value": "192MiB"
+      },
+      {
+        "name": "DEPLOYMENT_ENVIRONMENT",
+        "value": "unset"
+      },
+      {
+        "name": "CLUSTER_NAME",
+        "value": "unset"
+      }
+    ],
+    "extraArgs": [
+      "--config=yaml:exporters::otlp_http/newrelic::endpoint: https://otlp.nr-data.net",
+      "--config=yaml:exporters::otlp_http/newrelic::timeout: 10s",
+      "--config=yaml:exporters::otlp_http/newrelic::sending_queue::queue_size: 64",
+      "--config=yaml:exporters::otlp_http/newrelic::sending_queue::num_consumers: 2",
+      "--config=yaml:exporters::otlp_http/newrelic::retry_on_failure::max_elapsed_time: 60s"
+    ],
+    "configMap": {
+      "extraConfig": {
+        "receivers": {
+          "otlp/app": {
+            "protocols": {
+              "http": {
+                "endpoint": "0.0.0.0:4318",
+                "max_request_body_size": 4194304
+              }
+            }
+          }
+        },
+        "processors": {
+          "resource/app": {
+            "attributes": [
+              {
+                "key": "k8s.cluster.name",
+                "value": "${env:CLUSTER_NAME}",
+                "action": "upsert"
+              },
+              {
+                "key": "deployment.environment.name",
+                "value": "${env:DEPLOYMENT_ENVIRONMENT}",
+                "action": "upsert"
+              }
+            ]
+          },
+          "k8s_attributes/app": {
+            "auth_type": "serviceAccount",
+            "passthrough": false,
+            "extract": {
+              "metadata": [
+                "k8s.namespace.name",
+                "k8s.pod.name",
+                "k8s.node.name",
+                "k8s.deployment.name"
+              ]
+            },
+            "pod_association": [
+              {
+                "sources": [
+                  {
+                    "from": "connection"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "pipelines": {
+          "traces/app": {
+            "receivers": [
+              "otlp/app"
+            ],
+            "processors": [
+              "memory_limiter",
+              "k8s_attributes/app",
+              "resource/app",
+              "batch"
+            ],
+            "exporters": [
+              "otlp_http/newrelic"
+            ]
+          },
+          "metrics/app": {
+            "receivers": [
+              "otlp/app"
+            ],
+            "processors": [
+              "memory_limiter",
+              "k8s_attributes/app",
+              "resource/app",
+              "batch"
+            ],
+            "exporters": [
+              "otlp_http/newrelic"
+            ]
+          },
+          "logs/app": {
+            "receivers": [
+              "otlp/app"
+            ],
+            "processors": [
+              "memory_limiter",
+              "k8s_attributes/app",
+              "resource/app",
+              "batch"
+            ],
+            "exporters": [
+              "otlp_http/newrelic"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
