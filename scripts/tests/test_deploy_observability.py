@@ -89,6 +89,15 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual("garageflow-otel", service["metadata"]["name"])
         self.assertEqual(4318, service["spec"]["ports"][0]["port"])
 
+    def test_daemonset_cloud_detection_uses_only_environment_without_aws_credentials(self):
+        values = json.loads((deploy.ROOT / "observability/values.json").read_text())
+        self.assertIn(
+            "--config=yaml:processors::resource_detection/cloudproviders::detectors: [env]",
+            values["daemonset"]["extraArgs"],
+        )
+        for workload in ("daemonset", "deployment"):
+            self.assertFalse(any(item["name"].startswith("AWS_") for item in values[workload]["envs"]))
+
     def test_chart_checksum_rejects_changed_release(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(deploy, "download", return_value=b"wrong"):
             with self.assertRaises(deploy.DeploymentError):

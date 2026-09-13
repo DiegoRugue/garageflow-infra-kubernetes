@@ -64,6 +64,7 @@
       }
     ],
     "extraArgs": [
+      "--config=yaml:processors::resource_detection/cloudproviders::detectors: [env]",
       "--config=yaml:exporters::otlp_http/newrelic::endpoint: https://otlp.nr-data.net",
       "--config=yaml:exporters::otlp_http/newrelic::timeout: 10s",
       "--config=yaml:exporters::otlp_http/newrelic::sending_queue::queue_size: 64",
