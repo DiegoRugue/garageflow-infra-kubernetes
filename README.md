@@ -108,3 +108,31 @@ for root in ingress edge; do
 done
 bash -n scripts/deploy-ingress.sh scripts/deploy-edge.sh scripts/deploy-edge-component.sh
 ```
+
+## New Relic observability
+
+The opt-in `Deploy Observability` workflow runs after platform deployment and can also be dispatched from `main` (production) or `develop` (homologation). It uses the protected environment and the exact commit checked by the quality gate. Set `NEW_RELIC_ENABLED=true` only after reviewing live node capacity and merging the collector configuration. An absent flag skips installation. Set protected variables `NEW_RELIC_ACCOUNT_ID` (production: `8506965`), `NEW_RELIC_REGION=US`, and `AWS_ACCOUNT_ID`, plus the existing AWS credentials/state bucket and the environment secret `NEW_RELIC_LICENSE_KEY`.
+
+Collection uses the official `nr-k8s-otel-collector` chart **0.14.2**, verified against its SHA-256, with NRDOT **1.19.0**, kube-state-metrics chart **8.1.3**, and a pinned Kubernetes **1.36.0** init utility image. Helm **3.19.0** installs one deployment and one collector per node in `newrelic`. The collectors use read-only Kubernetes discovery permissions and export HTTP/protobuf through HTTPS/443 to `https://otlp.nr-data.net`. They require existing outbound connectivity; installation creates no NAT, public receiver, or Lambda instrumentation. See [the architecture decision](docs/adr/0001-newrelic-opentelemetry.md).
+
+The API contract is `Observability__Enabled=true` and `Observability__OtlpEndpoint=http://garageflow-otel.newrelic.svc.cluster.local:4318`, with service name `garageflow-api`. Enable the API only after the collector is ready. The ClusterIP receiver accepts traces, metrics and logs; API logs arrive through OTLP only. File log pipelines and Kubernetes event collection are disabled. No ingestion key belongs in API configuration. Namespace, pod, node, cluster and environment attributes enrich application telemetry. Keep sensitive payloads, credentials and identifiers out of application telemetry at the source.
+
+The ingestion key is passed only to Kubernetes Secret creation through stdin, using server-side apply without a last-applied annotation. It is excluded from child environments, Helm values/release history, Terraform state and command/error output. The referenced Secret stays outside Helm ownership. Successful upgrades restart collectors to pick up key rotations. The workflow temporarily adds the actual runner IPv4 `/32` to a scoped EKS endpoint configuration and uses a temporary kubeconfig. Cleanup waits for submitted EKS updates and restores the original endpoint configuration only if it still matches the owned grant. A concurrent change or an unknown submission outcome preserves the lease and fails rather than overwriting access. An `always()` step retries cleanup; inspect the EKS update and reconcile the retained runner lease if credentials expire, a run is forcibly terminated, or another deploy modifies the endpoint concurrently.
+
+For two nodes, steady requests are **480 MiB and 325m CPU**, and limits are **704 MiB and 1600m CPU**. Rolling deployment and kube-state-metrics updates can add up to **320 MiB and 600m CPU** in limits. DaemonSet init containers inherit the daemonset budget. These are bounded initial settings, not evidence that existing nodes have sufficient headroom. Review per-node allocatable resources, existing requests, actual memory, pod slots and rollout placement before enabling; do not increase node counts or alter application HPA targets as part of this install. Collectors use memory limiting, Go memory targets, batching, a 64-batch export queue and retries capped at 60 seconds. Backend failure can discard telemetry; it must not block business operations.
+
+Render the dashboard to an external path and import its JSON in New Relic:
+
+```bash
+python scripts/render_observability_dashboard.py --account-id 8506965 --environment production --output /tmp/garageflow-dashboard.json
+```
+
+The template has six API widgets and two node CPU/memory widgets. Node percentage widgets use the chart's generated utilization ratios multiplied by 100. Use New Relic's Kubernetes navigator for pods, deployments, restarts and HPA views. Import/render validation does not prove ingestion or query results. After merged deployment, verify one real request with correlated log/trace, HTTP duration metrics, both nodes and pod metrics, then compare memory/CPU and exporter errors with a baseline. Loss of telemetry is not proof of uptime; health checks and external availability need separate validation. Business status duration indicators and Lambda internals are outside this slice.
+
+Useful initial queries (select the intended New Relic account):
+
+```sql
+FROM Span SELECT count(*) WHERE service.name = 'garageflow-api' FACET deployment.environment.name SINCE 30 minutes ago
+FROM Log SELECT count(*) WHERE service.name = 'garageflow-api' FACET deployment.environment.name SINCE 30 minutes ago
+FROM Metric SELECT average(node.memory.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-production' FACET k8s.node.name TIMESERIES
+```

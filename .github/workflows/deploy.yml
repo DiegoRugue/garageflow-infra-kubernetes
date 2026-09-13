@@ -117,3 +117,8 @@ jobs:
     with:
       component: ingress
     secrets: inherit
+
+  observability:
+    needs: deploy
+    uses: ./.github/workflows/deploy-observability.yml
+    secrets: inherit

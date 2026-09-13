@@ -1,0 +1,67 @@
+{
+  "name": "GarageFlow - Technical - ${ENVIRONMENT}",
+  "description": "API and Kubernetes telemetry. Lambda execution and business status-duration indicators are outside this dashboard. Missing data does not mean healthy uptime. Validate queries against received telemetry before acceptance.",
+  "permissions": "PRIVATE",
+  "pages": [
+    {
+      "name": "API",
+      "description": "HTTP metrics cover all measured requests; traces may be sampled. Health probes are not a measure of external availability.",
+      "widgets": [
+        {
+          "title": "HTTP latency p50 / p95 / p99 (seconds)",
+          "visualization": {"id": "viz.line"},
+          "layout": {"column": 1, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT percentile(http.server.request.duration, 50, 95, 99) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+        },
+        {
+          "title": "HTTP requests per minute",
+          "visualization": {"id": "viz.line"},
+          "layout": {"column": 7, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT rate(count(http.server.request.duration), 1 minute) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+        },
+        {
+          "title": "HTTP 5xx (%)",
+          "visualization": {"id": "viz.line"},
+          "layout": {"column": 1, "row": 4, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT 100 * filter(count(http.server.request.duration), WHERE http.response.status_code >= 500) / count(http.server.request.duration) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+        },
+        {
+          "title": "Latency p95 by route (seconds)",
+          "visualization": {"id": "viz.table"},
+          "layout": {"column": 7, "row": 4, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT percentile(http.server.request.duration, 95) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' FACET http.route LIMIT 30"}]}
+        },
+        {
+          "title": "Recent correlated request logs",
+          "visualization": {"id": "viz.table"},
+          "layout": {"column": 1, "row": 7, "width": 12, "height": 4},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Log SELECT timestamp, message, trace.id, span.id WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' LIMIT 30"}]}
+        },
+        {
+          "title": "Recent server spans (sampled, not total traffic)",
+          "visualization": {"id": "viz.table"},
+          "layout": {"column": 1, "row": 11, "width": 12, "height": 4},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Span SELECT timestamp, name, duration.ms, trace.id, id, http.response.status_code WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND span.kind = 'server' LIMIT 30"}]}
+        }
+      ]
+    },
+    {
+      "name": "Kubernetes",
+      "description": "Container usage aggregated by node from the pinned NRDOT chart LowDataMode pipeline, relative to allocatable capacity. Host overhead can differ from kubectl top nodes. Use Kubernetes Navigator for pod, deployment and HPA detail. Validate received metrics before acceptance.",
+      "widgets": [
+        {
+          "title": "Container CPU per node / allocatable (%)",
+          "visualization": {"id": "viz.line"},
+          "layout": {"column": 1, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT average(node.cpu.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"}]}
+        },
+        {
+          "title": "Container memory per node / allocatable (%)",
+          "visualization": {"id": "viz.line"},
+          "layout": {"column": 7, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT average(node.memory.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"}]}
+        }
+      ]
+    }
+  ]
+}
