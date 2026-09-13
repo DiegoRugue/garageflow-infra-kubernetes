@@ -93,6 +93,13 @@ def cluster_config(cluster):
     return {field: config[field] for field in ("endpointPublicAccess", "endpointPrivateAccess", "publicAccessCidrs")}
 
 
+def same_access_config(left, right):
+    """EKS can reorder CIDRs; retain exact comparison of every other setting."""
+    return {**left, "publicAccessCidrs": sorted(left["publicAccessCidrs"])} == {
+        **right, "publicAccessCidrs": sorted(right["publicAccessCidrs"])
+    }
+
+
 def wait_update(cluster, update_id):
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
@@ -124,10 +131,10 @@ def restore_access(temporary):
     if lease["pendingUpdate"]:
         wait_update(lease["clusterName"], lease["pendingUpdate"])
     current = cluster_config(lease["clusterName"])
-    if current == lease["original"]:
+    if same_access_config(current, lease["original"]):
         marker.unlink()
         return
-    if current != lease["granted"]:
+    if not same_access_config(current, lease["granted"]):
         raise DeploymentError("EKS access changed concurrently; refusing to overwrite another owner's configuration")
     def submitted(update_id):
         lease["pendingUpdate"] = update_id
@@ -153,7 +160,7 @@ def grant_access(cluster, temporary):
     marker = temporary / LEASE_NAME
     lease = dict(clusterName=cluster, original=original, granted=granted, pendingUpdate=None)
     marker.write_text(json.dumps(lease))
-    if original != granted:
+    if not same_access_config(original, granted):
         def submitted(update_id):
             lease["pendingUpdate"] = update_id
             marker.write_text(json.dumps(lease))
