@@ -110,6 +110,49 @@ class ObservabilityTests(unittest.TestCase):
                 deploy.restore_access(Path(directory))
             self.assertTrue(path.exists())
 
+    def test_reordered_granted_cidrs_restore_original_access(self):
+        original = dict(endpointPublicAccess=True, endpointPrivateAccess=True,
+                        publicAccessCidrs=["9.9.9.9/32", "8.8.8.8/32"])
+        granted = {**original, "publicAccessCidrs": [*original["publicAccessCidrs"], "1.1.1.1/32"]}
+        current = {**granted, "publicAccessCidrs": list(reversed(granted["publicAccessCidrs"]))}
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / deploy.LEASE_NAME
+            marker.write_text(json.dumps(dict(clusterName="garageflow-production", original=original,
+                                             granted=granted, pendingUpdate=None)))
+            with patch.object(deploy, "cluster_config", return_value=current), patch.object(deploy, "update_access") as update:
+                deploy.restore_access(Path(directory))
+                self.assertEqual(("garageflow-production", original), update.call_args.args)
+                self.assertFalse(marker.exists())
+
+    def test_reordered_original_cidrs_clear_lease_without_aws_update(self):
+        original = dict(endpointPublicAccess=True, endpointPrivateAccess=True,
+                        publicAccessCidrs=["9.9.9.9/32", "8.8.8.8/32"])
+        granted = {**original, "publicAccessCidrs": [*original["publicAccessCidrs"], "1.1.1.1/32"]}
+        current = {**original, "publicAccessCidrs": list(reversed(original["publicAccessCidrs"]))}
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / deploy.LEASE_NAME
+            marker.write_text(json.dumps(dict(clusterName="garageflow-production", original=original,
+                                             granted=granted, pendingUpdate=None)))
+            with patch.object(deploy, "cluster_config", return_value=current), patch.object(deploy, "update_access") as update:
+                deploy.restore_access(Path(directory))
+                update.assert_not_called()
+                self.assertFalse(marker.exists())
+
+    def test_changed_network_or_endpoint_flags_still_preserve_lease(self):
+        original = dict(endpointPublicAccess=True, endpointPrivateAccess=True, publicAccessCidrs=["9.9.9.9/32"])
+        granted = {**original, "publicAccessCidrs": ["9.9.9.9/32", "1.1.1.1/32"]}
+        for changes in ({"publicAccessCidrs": ["9.9.9.9/32", "8.8.8.8/32"]},
+                        {"endpointPublicAccess": False}, {"endpointPrivateAccess": False}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
+                marker = Path(directory) / deploy.LEASE_NAME
+                marker.write_text(json.dumps(dict(clusterName="garageflow-production", original=original,
+                                                 granted=granted, pendingUpdate=None)))
+                with patch.object(deploy, "cluster_config", return_value={**granted, **changes}), patch.object(deploy, "update_access") as update:
+                    with self.assertRaises(deploy.DeploymentError):
+                        deploy.restore_access(Path(directory))
+                    update.assert_not_called()
+                    self.assertTrue(marker.exists())
+
     def test_install_failure_restores_access_and_never_passes_key_to_helm(self):
         document = manifest()
         outputs = document["outputs"]
