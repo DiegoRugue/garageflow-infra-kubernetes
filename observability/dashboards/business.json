@@ -1,0 +1,37 @@
+{
+  "name": "GarageFlow - Business - ${ENVIRONMENT}",
+  "description": "Daily work orders (OS): seven America/Sao_Paulo business dates, including partial today. Database snapshots refresh every 5 minutes. The 15-minute query window selects recent telemetry, not the business reporting period. Missing telemetry is not zero activity. Validate received values against persisted work orders after deployment.",
+  "permissions": "PRIVATE",
+  "pages": [
+    {
+      "name": "Work orders - seven business days (today partial)",
+      "description": "Created volume uses CreatedAt; eligible completion count and mean use CompletedAt. Elapsed completion = CompletedAt - StartedAt, once per OS in Completed or Delivered with valid timestamps. No eligible OS means a null/absent mean; equal timestamps give a real zero. Diagnosis, approval wait, pickup wait, integration failures and uptime are separate indicators. Check snapshot freshness before interpreting values.",
+      "widgets": [
+        {
+          "title": "OS created by creation date - Sao Paulo (today partial)",
+          "visualization": {"id": "viz.bar"},
+          "layout": {"column": 1, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT latest(garageflow.work_orders.created) AS 'Created OS' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND work_orders.timezone = 'America/Sao_Paulo' FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7 SINCE 15 minutes ago"}]}
+        },
+        {
+          "title": "Mean elapsed completion (minutes) by completion date - today partial",
+          "visualization": {"id": "viz.bar"},
+          "layout": {"column": 7, "row": 1, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT if(latest(garageflow.work_orders.completed) > 0, latest(garageflow.work_orders.duration.mean) / 60) AS 'Mean minutes (null without eligible OS)' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND work_orders.timezone = 'America/Sao_Paulo' FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7 SINCE 15 minutes ago"}]}
+        },
+        {
+          "title": "Eligible completed OS by completion date - Sao Paulo (today partial)",
+          "visualization": {"id": "viz.bar"},
+          "layout": {"column": 1, "row": 4, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT latest(garageflow.work_orders.completed) AS 'Eligible completed OS' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND work_orders.timezone = 'America/Sao_Paulo' FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7 SINCE 15 minutes ago"}]}
+        },
+        {
+          "title": "Daily snapshot freshness - Sao Paulo local time; refresh every 5 minutes",
+          "visualization": {"id": "viz.table"},
+          "layout": {"column": 7, "row": 4, "width": 6, "height": 3},
+          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT latest(garageflow.work_orders.created) AS 'Created OS', latest(garageflow.work_orders.completed) AS 'Eligible completed OS', if(latest(garageflow.work_orders.completed) > 0, latest(garageflow.work_orders.duration.mean) / 60) AS 'Mean minutes (null without eligible OS)', toDatetime(latest(garageflow.work_orders.snapshot.timestamp) * 1000, 'yyyy-MM-dd HH:mm:ss', timezone: 'America/Sao_Paulo') AS 'Successful refresh started (Sao Paulo)' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND work_orders.timezone = 'America/Sao_Paulo' FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7 SINCE 15 minutes ago"}]}
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import importlib
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,69 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class DashboardTests(unittest.TestCase):
+    def test_default_and_explicit_technical_selection_preserve_existing_dashboard(self):
+        renderer = importlib.import_module("render_observability_dashboard")
+        default = renderer.build_dashboard(8506965, "production")
+        self.assertEqual("GarageFlow - Technical - production", default["name"])
+        self.assertEqual(default, renderer.build_dashboard(8506965, "production", "technical"))
+        self.assertEqual(["API", "Kubernetes"], [page["name"] for page in default["pages"]])
+
+    def test_business_cli_writes_import_document_for_selected_account_and_environment(self):
+        renderer = importlib.import_module("render_observability_dashboard")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "business.json"
+            self.assertEqual(0, renderer.main([
+                "--account-id", "1234567", "--environment", "homologation",
+                "--dashboard", "business", "--output", str(output),
+            ]))
+            document = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual("GarageFlow - Business - homologation", document["name"])
+        self.assertEqual("PRIVATE", document["permissions"])
+        self.assertEqual(1, len(document["pages"]))
+        self.assertEqual(4, len(document["pages"][0]["widgets"]))
+        for widget in document["pages"][0]["widgets"]:
+            for query in widget["rawConfiguration"]["nrqlQueries"]:
+                self.assertEqual([1234567], query["accountIds"])
+                self.assertIn("deployment.environment.name = 'homologation'", query["query"])
+        self.assertNotIn("${", json.dumps(document))
+        self.assertNotIn("production", json.dumps(document))
+
+    def test_rejects_unknown_dashboard_and_business_invalid_inputs(self):
+        renderer = importlib.import_module("render_observability_dashboard")
+        for dashboard in ["", "../technical", "all", None]:
+            with self.subTest(dashboard=dashboard), self.assertRaises(ValueError):
+                renderer.build_dashboard(8506965, "production", dashboard)
+        for account in [0, -1, True, "8506965", 1.5]:
+            with self.subTest(account=account), self.assertRaises(ValueError):
+                renderer.build_dashboard(account, "production", "business")
+        for environment in ["", "main", "production' OR true", None]:
+            with self.subTest(environment=environment), self.assertRaises(ValueError):
+                renderer.build_dashboard(8506965, environment, "business")
+
+    def test_business_queries_use_latest_daily_snapshots_without_replica_sums(self):
+        renderer = importlib.import_module("render_observability_dashboard")
+        document = renderer.build_dashboard(8506965, "production", "business")
+        queries = [query["query"] for widget in document["pages"][0]["widgets"]
+                   for query in widget["rawConfiguration"]["nrqlQueries"]]
+        for query in queries:
+            self.assertTrue(query.startswith("FROM Metric SELECT "))
+            self.assertIn("service.name = 'garageflow-api'", query)
+            self.assertIn("deployment.environment.name = 'production'", query)
+            self.assertIn("work_orders.timezone = 'America/Sao_Paulo'", query)
+            self.assertIn("FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) "
+                          "LIMIT 7 SINCE 15 minutes ago", query)
+            self.assertNotRegex(query.lower(), r"\b(sum|average|count|rate)\s*\(|\btimeseries\b")
+            self.assertEqual({"work_orders.date", "work_orders.timezone"},
+                             set(re.findall(r"(?<![\w.])work_orders\.[a-z_]+", query)))
+        self.assertIn("latest(garageflow.work_orders.created)", queries[0])
+        self.assertIn("if(latest(garageflow.work_orders.completed) > 0, "
+                      "latest(garageflow.work_orders.duration.mean) / 60)", queries[1])
+        self.assertIn("latest(garageflow.work_orders.completed)", queries[2])
+        self.assertIn("latest(garageflow.work_orders.snapshot.timestamp) * 1000", queries[3])
+        self.assertIn("toDatetime(", queries[3])
+        self.assertIn("'yyyy-MM-dd HH:mm:ss', timezone: 'America/Sao_Paulo'", queries[3])
+        self.assertIn("latest(garageflow.work_orders.completed)", queries[3])
+
     def test_cli_writes_importable_document_and_rejects_invalid_account(self):
         renderer = importlib.import_module("render_observability_dashboard")
         with tempfile.TemporaryDirectory() as directory:
@@ -53,7 +117,9 @@ class DashboardTests(unittest.TestCase):
 
     def test_widgets_fit_grid_without_overlap_and_have_unique_titles(self):
         renderer = importlib.import_module("render_observability_dashboard")
-        for page in renderer.build_dashboard(8506965, "production")["pages"]:
+        pages = [page for dashboard in ("technical", "business")
+                 for page in renderer.build_dashboard(8506965, "production", dashboard)["pages"]]
+        for page in pages:
             occupied = set()
             titles = set()
             for widget in page["widgets"]:
