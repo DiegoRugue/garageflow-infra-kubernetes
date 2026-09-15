@@ -1,65 +1,207 @@
 {
   "name": "GarageFlow - Technical - ${ENVIRONMENT}",
-  "description": "API and Kubernetes telemetry. Lambda execution and business status-duration indicators are outside this dashboard. Missing data does not mean healthy uptime. Validate queries against received telemetry before acceptance.",
+  "description": "Desempenho HTTP, logs correlacionados, traces e uso de recursos do Kubernetes. Ausência de dados não comprova disponibilidade.",
   "permissions": "PRIVATE",
   "pages": [
     {
       "name": "API",
-      "description": "HTTP metrics cover all measured requests; traces may be sampled. Health probes are not a measure of external availability.",
+      "description": "Métricas HTTP de todas as requisições medidas, incluindo health checks. Traces podem ter amostragem. Latências em milissegundos.",
       "widgets": [
         {
-          "title": "HTTP latency p50 / p95 / p99 (seconds)",
-          "visualization": {"id": "viz.line"},
-          "layout": {"column": 1, "row": 1, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT percentile(http.server.request.duration, 50, 95, 99) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+          "title": "Leitura do painel técnico",
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 12,
+            "height": 2
+          },
+          "rawConfiguration": {
+            "text": "**Latências em milissegundos · volume em requisições/minuto · erros em percentual.**\n\nAs métricas incluem health checks. p95 indica o tempo dentro do qual 95% das requisições foram atendidas. Use o Trace ID para correlacionar logs e spans; os traces podem ser amostrados. Ausência de dados não comprova disponibilidade externa."
+          }
         },
         {
-          "title": "HTTP requests per minute",
-          "visualization": {"id": "viz.line"},
-          "layout": {"column": 7, "row": 1, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT rate(count(http.server.request.duration), 1 minute) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+          "title": "Latência HTTP · p50, p95 e p99 (ms)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 1,
+            "row": 3,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT getField(percentile(http.server.request.duration, 50), '50.0') * 1000 AS 'p50 (ms)', getField(percentile(http.server.request.duration, 95), '95.0') * 1000 AS 'p95 (ms)', getField(percentile(http.server.request.duration, 99), '99.0') * 1000 AS 'p99 (ms)' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"
+              }
+            ]
+          }
         },
         {
-          "title": "HTTP 5xx (%)",
-          "visualization": {"id": "viz.line"},
-          "layout": {"column": 1, "row": 4, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT 100 * filter(count(http.server.request.duration), WHERE http.response.status_code >= 500) / count(http.server.request.duration) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"}]}
+          "title": "Requisições HTTP por minuto",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 7,
+            "row": 3,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT rate(count(http.server.request.duration), 1 minute) AS 'Requisições/min' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"
+              }
+            ]
+          }
         },
         {
-          "title": "Latency p95 by route (seconds)",
-          "visualization": {"id": "viz.table"},
-          "layout": {"column": 7, "row": 4, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT percentile(http.server.request.duration, 95) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' FACET http.route LIMIT 30"}]}
+          "title": "Respostas HTTP 5xx (%)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 1,
+            "row": 6,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT 100 * filter(count(http.server.request.duration), WHERE http.response.status_code >= 500) / count(http.server.request.duration) AS '5xx (%)' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"
+              }
+            ]
+          }
         },
         {
-          "title": "Recent correlated request logs",
-          "visualization": {"id": "viz.table"},
-          "layout": {"column": 1, "row": 7, "width": 12, "height": 4},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Log SELECT timestamp, message, trace.id, span.id WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' LIMIT 30"}]}
+          "title": "Latência p95 por rota (ms)",
+          "visualization": {
+            "id": "viz.table"
+          },
+          "layout": {
+            "column": 7,
+            "row": 6,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT getField(percentile(http.server.request.duration, 95), '95.0') * 1000 AS 'p95 (ms)' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' FACET http.route LIMIT 30"
+              }
+            ]
+          }
         },
         {
-          "title": "Recent server spans (sampled, not total traffic)",
-          "visualization": {"id": "viz.table"},
-          "layout": {"column": 1, "row": 11, "width": 12, "height": 4},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Span SELECT timestamp, name, duration.ms, trace.id, id, http.response.status_code WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND span.kind = 'server' LIMIT 30"}]}
+          "title": "Requisições recentes · logs correlacionados",
+          "visualization": {
+            "id": "viz.table"
+          },
+          "layout": {
+            "column": 1,
+            "row": 9,
+            "width": 12,
+            "height": 4
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Log SELECT timestamp, `Method` AS 'Método', `Route` AS 'Rota', `StatusCode` AS 'Status', `DurationMs` AS 'Duração (ms)', trace.id AS 'Trace ID', span.id AS 'Span ID' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND `Method` IS NOT NULL AND `Route` IS NOT NULL ORDER BY timestamp DESC LIMIT 30"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Traces recentes · spans de servidor com amostragem",
+          "visualization": {
+            "id": "viz.table"
+          },
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 12,
+            "height": 4
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Span SELECT timestamp, name AS 'Operação', duration.ms AS 'Duração (ms)', http.response.status_code AS 'Status', trace.id AS 'Trace ID', id AS 'Span ID' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND span.kind = 'server' ORDER BY timestamp DESC LIMIT 30"
+              }
+            ]
+          }
         }
       ]
     },
     {
       "name": "Kubernetes",
-      "description": "Container usage aggregated by node from the pinned NRDOT chart LowDataMode pipeline, relative to allocatable capacity. Host overhead can differ from kubectl top nodes. Use Kubernetes Navigator for pod, deployment and HPA detail. Validate received metrics before acceptance.",
+      "description": "Uso dos containers agregado por nó, relativo à capacidade alocável. O consumo total do host pode ser diferente.",
       "widgets": [
         {
-          "title": "Container CPU per node / allocatable (%)",
-          "visualization": {"id": "viz.line"},
-          "layout": {"column": 1, "row": 1, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT average(node.cpu.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"}]}
+          "title": "Capacidade do Kubernetes",
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 12,
+            "height": 2
+          },
+          "rawConfiguration": {
+            "text": "**Percentuais relativos à capacidade alocável de cada nó.**\n\nOs gráficos agregam o uso dos containers; o consumo total do host pode ser diferente. As cores identificam os nós e não representam níveis de alerta. Para pods, reinícios, deployments e HPA, consulte o Kubernetes Navigator."
+          }
         },
         {
-          "title": "Container memory per node / allocatable (%)",
-          "visualization": {"id": "viz.line"},
-          "layout": {"column": 7, "row": 1, "width": 6, "height": 3},
-          "rawConfiguration": {"nrqlQueries": [{"accountIds": [], "query": "FROM Metric SELECT average(node.memory.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"}]}
+          "title": "CPU dos containers por nó (% alocável)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 1,
+            "row": 3,
+            "width": 6,
+            "height": 5
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT average(node.cpu.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Memória dos containers por nó (% alocável)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 7,
+            "row": 3,
+            "width": 6,
+            "height": 5
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT average(node.memory.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-${ENVIRONMENT}' FACET k8s.node.name TIMESERIES"
+              }
+            ]
+          }
         }
       ]
     }

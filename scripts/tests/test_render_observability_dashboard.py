@@ -33,7 +33,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(1, len(document["pages"]))
         self.assertEqual(4, len(document["pages"][0]["widgets"]))
         for widget in document["pages"][0]["widgets"]:
-            for query in widget["rawConfiguration"]["nrqlQueries"]:
+            for query in widget["rawConfiguration"].get("nrqlQueries", []):
                 self.assertEqual([1234567], query["accountIds"])
                 self.assertIn("deployment.environment.name = 'homologation'", query["query"])
         self.assertNotIn("${", json.dumps(document))
@@ -55,7 +55,7 @@ class DashboardTests(unittest.TestCase):
         renderer = importlib.import_module("render_observability_dashboard")
         document = renderer.build_dashboard(8506965, "production", "business")
         queries = [query["query"] for widget in document["pages"][0]["widgets"]
-                   for query in widget["rawConfiguration"]["nrqlQueries"]]
+                   for query in widget["rawConfiguration"].get("nrqlQueries", [])]
         for query in queries:
             self.assertTrue(query.startswith("FROM Metric SELECT "))
             self.assertIn("service.name = 'garageflow-api'", query)
@@ -67,13 +67,13 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual({"work_orders.date", "work_orders.timezone"},
                              set(re.findall(r"(?<![\w.])work_orders\.[a-z_]+", query)))
         self.assertIn("latest(garageflow.work_orders.created)", queries[0])
+        self.assertIn("latest(garageflow.work_orders.completed)", queries[1])
         self.assertIn("if(latest(garageflow.work_orders.completed) > 0, "
-                      "latest(garageflow.work_orders.duration.mean) / 60)", queries[1])
+                      "latest(garageflow.work_orders.duration.mean) / 60)", queries[2])
         self.assertIn("latest(garageflow.work_orders.completed)", queries[2])
-        self.assertIn("latest(garageflow.work_orders.snapshot.timestamp) * 1000", queries[3])
-        self.assertIn("toDatetime(", queries[3])
-        self.assertIn("'yyyy-MM-dd HH:mm:ss', timezone: 'America/Sao_Paulo'", queries[3])
-        self.assertIn("latest(garageflow.work_orders.completed)", queries[3])
+        self.assertIn("latest(garageflow.work_orders.snapshot.timestamp) * 1000", queries[2])
+        self.assertIn("toDatetime(", queries[2])
+        self.assertIn("'yyyy-MM-dd HH:mm:ss', timezone: 'America/Sao_Paulo'", queries[2])
 
     def test_cli_writes_importable_document_and_rejects_invalid_account(self):
         renderer = importlib.import_module("render_observability_dashboard")
