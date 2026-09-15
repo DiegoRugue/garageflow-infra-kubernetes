@@ -30,9 +30,9 @@ class DashboardTests(unittest.TestCase):
             document = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual("GarageFlow - Business - homologation", document["name"])
         self.assertEqual("PRIVATE", document["permissions"])
-        self.assertEqual(1, len(document["pages"]))
+        self.assertEqual(2, len(document["pages"]))
         self.assertEqual(4, len(document["pages"][0]["widgets"]))
-        for widget in document["pages"][0]["widgets"]:
+        for widget in [widget for page in document["pages"] for widget in page["widgets"]]:
             for query in widget["rawConfiguration"].get("nrqlQueries", []):
                 self.assertEqual([1234567], query["accountIds"])
                 self.assertIn("deployment.environment.name = 'homologation'", query["query"])
@@ -74,6 +74,27 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("latest(garageflow.work_orders.snapshot.timestamp) * 1000", queries[2])
         self.assertIn("toDatetime(", queries[2])
         self.assertIn("'yyyy-MM-dd HH:mm:ss', timezone: 'America/Sao_Paulo'", queries[2])
+
+    def test_processing_page_uses_failures_not_expected_rejections_or_sampled_spans(self):
+        renderer = importlib.import_module("render_observability_dashboard")
+        document = renderer.build_dashboard(8506965, "production", "business")
+        self.assertEqual("Falhas e integrações", document["pages"][1]["name"])
+        queries = [item["query"] for widget in document["pages"][1]["widgets"]
+                   for item in widget["rawConfiguration"].get("nrqlQueries", [])]
+        self.assertEqual(5, len(queries))
+        for query in queries:
+            self.assertIn("service.name = 'garageflow-api'", query)
+            self.assertIn("deployment.environment.name = 'production'", query)
+            self.assertNotIn("FROM Span", query)
+            self.assertNotIn("SINCE 15 minutes ago", query)
+        self.assertIn("http.response.status_code >= 500", queries[0])
+        self.assertIn("sum(garageflow.integration.outbox.results)", queries[1])
+        self.assertIn("outbox.failure.kind != 'none'", queries[2])
+        self.assertIn("sum(garageflow.integration.outbox.polls)", queries[3])
+        self.assertIn("outbox.outcome = 'failure'", queries[3])
+        self.assertIn("EventName IN ('OutboxResult', 'OutboxPollFailure')", queries[4])
+        self.assertIn("CorrelationId", queries[4])
+        self.assertNotIn("message,", queries[4])
 
     def test_cli_writes_importable_document_and_rejects_invalid_account(self):
         renderer = importlib.import_module("render_observability_dashboard")
