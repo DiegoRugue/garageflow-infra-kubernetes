@@ -19,7 +19,7 @@
             "height": 2
           },
           "rawConfiguration": {
-            "text": "**Últimos 7 dias, incluindo hoje parcial · horário de São Paulo · atualização a cada 5 minutos.**\n\nTempo de execução: do início até a conclusão da OS (`CompletedAt − StartedAt`), uma vez por ordem. **Média vazia = sem conclusões com tempo válido; zero = duração zero registrada.** Confira a atualização na tabela: ausência de telemetria não significa ausência de atividade. O período de negócio é fixo; o seletor de tempo não altera este painel."
+            "text": "**Últimos 7 dias, incluindo hoje parcial · horário de São Paulo · atualização a cada 5 minutos.**\n\nTempo de execução: do início até a conclusão da OS (`CompletedAt − StartedAt`), uma vez por ordem. **Média vazia = sem conclusões com tempo válido; zero = duração zero registrada.** Confira a atualização na tabela: ausência de telemetria não significa ausência de atividade. O período de negócio é fixo; o seletor de tempo não altera esta página de indicadores diários."
           }
         },
         {
@@ -89,6 +89,127 @@
             "platformOptions": {
               "ignoreTimeRange": true
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Falhas e integrações",
+      "description": "Falhas técnicas nas operações de OS e resultados da integração de notificações via outbox. Contagens de resultados e tentativas; não representam OS únicas.",
+      "widgets": [
+        {
+          "title": "Leitura das falhas",
+          "visualization": {
+            "id": "viz.markdown"
+          },
+          "layout": {
+            "column": 1,
+            "row": 1,
+            "width": 12,
+            "height": 1
+          },
+          "rawConfiguration": {
+            "text": "**Falhas HTTP: respostas 5xx. Respostas esperadas 4xx não entram.** A outbox pode repetir tentativas: os resultados abaixo não são contagens de OS únicas. CorrelationId referencia o trace originador quando válido. Falta de dados não significa ausência de falhas; use o período selecionado para investigar."
+          }
+        },
+        {
+          "title": "Falhas HTTP de OS por rota (requisições/min)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 1,
+            "row": 2,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT rate(filter(count(http.server.request.duration), WHERE http.response.status_code >= 500), 1 minute) AS 'Falhas/min' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND (http.route = '/work-orders' OR http.route LIKE '/work-orders/%' OR http.route = '/me/work-orders' OR http.route LIKE '/me/work-orders/%' OR http.route = '/webhooks/estimate-decisions') FACET http.route LIMIT 30 TIMESERIES"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Outbox · resultados por situação e causa",
+          "visualization": {
+            "id": "viz.table"
+          },
+          "layout": {
+            "column": 7,
+            "row": 2,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(garageflow.integration.outbox.results) AS 'Resultados' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' FACET outbox.outcome, outbox.failure.kind LIMIT 30"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Outbox · resultados com falha por causa (por minuto)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 1,
+            "row": 5,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT rate(sum(garageflow.integration.outbox.results), 1 minute) AS 'Resultados com falha/min' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND outbox.failure.kind != 'none' FACET outbox.failure.kind TIMESERIES"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Outbox · falhas de polling (por minuto)",
+          "visualization": {
+            "id": "viz.line"
+          },
+          "layout": {
+            "column": 7,
+            "row": 5,
+            "width": 6,
+            "height": 3
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT rate(filter(sum(garageflow.integration.outbox.polls), WHERE outbox.outcome = 'failure'), 1 minute) AS 'Polls com falha/min' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' TIMESERIES"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Outbox · logs de processamento e correlação",
+          "visualization": {
+            "id": "viz.table"
+          },
+          "layout": {
+            "column": 1,
+            "row": 8,
+            "width": 12,
+            "height": 4
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Log SELECT timestamp, EventName AS 'Evento', Outcome AS 'Resultado', FailureKind AS 'Causa', CorrelationId AS 'Trace originador' WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}' AND EventName IN ('OutboxResult', 'OutboxPollFailure') ORDER BY timestamp DESC LIMIT 30"
+              }
+            ]
           }
         }
       ]

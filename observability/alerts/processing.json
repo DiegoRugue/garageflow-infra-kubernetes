@@ -1,0 +1,50 @@
+{
+  "policy": {
+    "name": "GarageFlow - Processing - ${ENVIRONMENT}",
+    "incidentPreference": "PER_CONDITION"
+  },
+  "defaults": {
+    "enabled": false,
+    "signal": {
+      "aggregationWindow": 60,
+      "aggregationMethod": "EVENT_FLOW",
+      "aggregationDelay": 120,
+      "fillOption": "NONE"
+    },
+    "terms": [{
+      "operator": "ABOVE",
+      "priority": "CRITICAL",
+      "threshold": 0,
+      "thresholdDuration": 60,
+      "thresholdOccurrences": "AT_LEAST_ONCE"
+    }],
+    "expiration": {
+      "closeViolationsOnExpiration": false,
+      "openViolationOnExpiration": false
+    },
+    "violationTimeLimitSeconds": 86400
+  },
+  "conditions": [
+    {
+      "name": "GarageFlow · falhas HTTP de OS · ${ENVIRONMENT}",
+      "description": "Mais de zero respostas 5xx em operações de OS numa janela de 60 segundos. Investigar rota e Trace ID. Respostas esperadas 4xx não entram. Ausência de telemetria e encerramento automático não comprovam recuperação.",
+      "nrql": {
+        "query": "FROM Metric SELECT filter(count(http.server.request.duration), WHERE http.response.status_code >= 500 AND (http.route = '/work-orders' OR http.route LIKE '/work-orders/%' OR http.route = '/me/work-orders' OR http.route LIKE '/me/work-orders/%' OR http.route = '/webhooks/estimate-decisions')) WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}'"
+      }
+    },
+    {
+      "name": "GarageFlow · falhas de notificações na outbox · ${ENVIRONMENT}",
+      "description": "Mais de zero resultados com falha na outbox numa janela de 60 segundos. Verificar categoria da falha e correlação. Conta tentativas/resultados, não OS únicas; o processamento pode ser repetido. Erros antes de confirmar o resultado aparecem na condição de polling.",
+      "nrql": {
+        "query": "FROM Metric SELECT filter(sum(garageflow.integration.outbox.results), WHERE outbox.failure.kind != 'none') WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}'"
+      }
+    },
+    {
+      "name": "GarageFlow · falhas de polling da outbox · ${ENVIRONMENT}",
+      "description": "Mais de zero falhas de polling numa janela de 60 segundos. Investigar acesso ao banco e processamento do lote. Um lote pode ter processado mensagens antes de falhar. Cancelamento solicitado durante shutdown não entra como falha.",
+      "nrql": {
+        "query": "FROM Metric SELECT filter(sum(garageflow.integration.outbox.polls), WHERE outbox.outcome = 'failure') WHERE service.name = 'garageflow-api' AND deployment.environment.name = '${ENVIRONMENT}'"
+      }
+    }
+  ]
+}
