@@ -63,7 +63,7 @@ jobs:
           bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
 
   deploy:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/develop' && vars.HOMOLOGATION_DEPLOY_ENABLED == 'true')
     needs: quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 90
