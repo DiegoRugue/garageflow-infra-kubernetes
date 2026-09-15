@@ -1,0 +1,11 @@
+flowchart LR
+    Bootstrap[Backend S3 existente] --> Platform[platform v1]
+    Platform --> Database[database v1 - repo banco]
+    Platform --> Ingress[ingress v2]
+    Database --> App[Aplicação: migrations e workload]
+    Ingress --> App
+    App --> Lambda[serverless v1 - funções e aliases]
+    Ingress --> Lambda
+    Lambda --> Edge[edge: rotas públicas]
+    Platform --> Observe[Coleta New Relic opt-in]
+    Observe -.->|habilitar exportação após coletor pronto| App

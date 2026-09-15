@@ -1,6 +1,6 @@
 # GarageFlow — Plataforma Kubernetes
 
-Este README é a documentação principal da infraestrutura compartilhada, rede, entrada da API e observabilidade. Três roots Terraform independentes compõem a plataforma: `platform`, `ingress` e `edge`. A operação detalhada e os parâmetros dos artefatos estão nas seções abaixo.
+Este README é a documentação principal da infraestrutura compartilhada, rede, entrada da API e observabilidade. Três módulos raiz (roots) Terraform independentes compõem a plataforma: `platform`, `ingress` e `edge`. A operação detalhada e os parâmetros dos artefatos estão nas seções abaixo.
 
 ## Sumário
 
@@ -9,61 +9,18 @@ Este README é a documentação principal da infraestrutura compartilhada, rede,
 - [Rede e escalabilidade](#rede-e-escalabilidade)
 - [Ordem de deploy e contratos](#ordem-de-deploy-e-contratos)
 - [Acesso e documentação das APIs](#acesso-e-documentação-das-apis)
-- [Configuration](#configuration)
-- [CI and deployment](#ci-and-deployment)
-- [Private ingress and public edge](#private-ingress-and-public-edge)
-- [New Relic observability](#new-relic-observability)
+- [Configuração](#configuração)
+- [Integração contínua e implantação](#integração-contínua-e-implantação)
+- [Entrada privada e borda pública](#entrada-privada-e-borda-pública)
+- [Observabilidade com New Relic](#observabilidade-com-new-relic)
 
 ## Visão de componentes na nuvem
 
 Este é o diagrama integrado da Fase 3. Os componentes externos a este repositório estão identificados; cada README detalha seus próprios artefatos.
 
-```mermaid
-flowchart TB
-    Client[Cliente ou funcionário] -->|HTTPS| Gateway
-    subgraph AWS["AWS Academy - us-east-1"]
-        Gateway[API Gateway HTTP API]
-        Authorizer[Lambda authorizer - repo serverless]
-        Gateway -->|JWT nas rotas protegidas| Authorizer
-        subgraph VPC["VPC do ambiente"]
-            subgraph Private["Subnets privadas de aplicação"]
-                Auth[Lambda CPF - repo serverless]
-                Link[VPC Link]
-                ALB[ALB interno - ingress]
-                VPCE[Endpoint privado Secrets Manager]
-            end
-            subgraph Workers["Subnets públicas dos workers"]
-                EKS[EKS - dois nós]
-                API[API e HPA - repo aplicação]
-                Collector[Coletor OTLP e métricas Kubernetes]
-                EKS --- API
-                EKS --- Collector
-            end
-            subgraph Database["Subnets dedicadas ao banco"]
-                RDS[(RDS PostgreSQL - repo banco)]
-            end
-            Link -->|HTTP 80| ALB
-            Auth -->|HTTP 80 e JWT de serviço| ALB
-            ALB -->|NodePort 30080| API
-            API -->|PostgreSQL 5432| RDS
-            API -->|OTLP privado 4318| Collector
-            Auth --> VPCE
-        end
-        Secrets[Secrets Manager]
-        SNS[SNS: notificações]
-        ECR[ECR: imagem por SHA]
-        S3[(S3: states e contratos)]
-        VPCE --> Secrets
-        Authorizer --> Secrets
-        API --> SNS
-        ECR --> API
-        Gateway -->|login CPF| Auth
-        Gateway -->|integração privada| Link
-    end
-    Actions[GitHub Actions dos quatro projetos] -->|Terraform e contratos| S3
-    Actions -->|deploy| EKS
-    Collector -->|HTTPS 443| NR[New Relic: dashboards e alertas]
-```
+![Visão de componentes na nuvem AWS](docs/diagrams/cloud-components.png)
+
+[Fonte editável do diagrama](docs/diagrams/cloud-components.mmd). Ícones do pacote oficial [AWS Architecture Icons](https://aws.amazon.com/architecture/icons/) de 31/07/2026, incorporados ao fonte para permitir exportação sem dependências de imagens externas. O ícone de interface de rede representa o VPC Link; API/HPA, coletor, GitHub Actions e New Relic mantêm rótulos próprios.
 
 As setas representam tráfego/dependências operacionais, não permissões de IAM. Roles preexistentes da Academy são entradas dos roots. O desenho não cria roles próprias, NAT gateway, domínio customizado ou certificado ACM. API pública usa HTTPS gerenciado; HTTP privado na VPC não tem criptografia de transporte.
 
@@ -98,23 +55,13 @@ EKS usa dois nós `t3.small` e papéis preexistentes. O [HPA da aplicação](htt
 
 ## Ordem de deploy e contratos
 
-```mermaid
-flowchart LR
-    Bootstrap[Backend S3 existente] --> Platform[platform v1]
-    Platform --> Database[database v1 - repo banco]
-    Platform --> Ingress[ingress v2]
-    Database --> App[Aplicação: migrations e workload]
-    Ingress --> App
-    App --> Lambda[serverless v1 - funções e aliases]
-    Ingress --> Lambda
-    Lambda --> Edge[edge: rotas públicas]
-    Platform --> Observe[Coleta New Relic opt-in]
-    Observe -.->|habilitar exportação após coletor pronto| App
-```
+![Ordem de implantação e contratos entre projetos](docs/diagrams/deployment-order.png)
 
-Cada produtor grava revisão imutável antes do contrato estável no S3. Platform/database/serverless usam v1; ingress usa v2 para declarar `transport=http` explicitamente. Consumers validam versão, produtor, ambiente, conta e identidade dos recursos. Segredos e state não fazem parte desses manifests.
+[Fonte editável do diagrama](docs/diagrams/deployment-order.mmd).
 
-Branches de deploy: `develop` → `homologation`, `main` → `production`. Estados, nomes, CIDRs e concurrency são separados por ambiente. Criar branches, Environments, secrets e proteção com PR/checks obrigatórios é parte do setup, não efeito do YAML. A configuração de homologação não deve ser confundida com uma execução já verificada.
+Cada produtor grava revisão imutável antes do contrato estável no S3. Platform/database/serverless usam v1; ingress usa v2 para declarar `transport=http` explicitamente. Os consumidores validam versão, produtor, ambiente, conta e identidade dos recursos. Segredos e state não fazem parte desses manifests.
+
+Branches de deploy: `develop` → `homologation`, `main` → `production`. Estados, nomes, CIDRs e concorrência são separados por ambiente. Criar branches, Environments, secrets e proteção com PR/checks obrigatórios é parte da configuração inicial, não efeito do YAML. A configuração de homologação não deve ser confundida com uma execução já verificada.
 
 ## Acesso e documentação das APIs
 
@@ -134,21 +81,23 @@ Troque `production` por `homologation` quando esse ambiente estiver provisionado
 
 Não há Swagger próprio para Terraform. O Gateway não publica `/internal/*`, probes, OpenAPI/Scalar ou catch-all. O coletor e banco também não expõem interfaces HTTP públicas. Dockerfile próprio não se aplica a este projeto; a coleta usa imagens de terceiros fixadas na configuração.
 
-## Configuration
+<a id="configuration"></a>
 
-Terraform is pinned to 1.15.7, AWS provider 6.49.0, and random provider 3.9.0. Copy `infra/platform/terraform.tfvars.example` outside the repository's tracked files and supply:
+## Configuração
 
-| Variable | Purpose |
+As versões estão fixadas em Terraform 1.15.7, provider AWS 6.49.0 e provider random 3.9.0. Copie `infra/platform/terraform.tfvars.example` para fora do repositório e informe:
+
+| Variável | Finalidade |
 | --- | --- |
-| `environment` | `homologation` or `production` |
-| `owner`, `expires_on` | Academy ownership and cleanup tags |
-| `eks_cluster_role_arn`, `eks_node_role_arn` | Pre-existing roles in the active Academy account |
-| `kubernetes_version` | EKS version, default `1.36`; deploy preflight requires standard support |
-| `bootstrap_admin_email` | Email stored in the bootstrap secret |
-| `notification_email` | SNS email subscription endpoint |
-| `public_access_cidrs` | Persistent operator/control IPv4 CIDRs allowed to reach the EKS API |
+| `environment` | `homologation` ou `production` |
+| `owner`, `expires_on` | Tags de responsável e expiração na Academy |
+| `eks_cluster_role_arn`, `eks_node_role_arn` | Papéis preexistentes na conta ativa da Academy |
+| `kubernetes_version` | Versão do EKS, padrão `1.36`; a pré-validação exige suporte padrão |
+| `bootstrap_admin_email` | E-mail armazenado no segredo de inicialização |
+| `notification_email` | Destinatário da assinatura de e-mail do SNS |
+| `public_access_cidrs` | CIDRs IPv4 persistentes dos operadores autorizados a acessar a API do EKS |
 
-Bootstrap the retained/versioned state bucket only when it does not already exist:
+Inicialize o bucket de estado com retenção e versionamento somente se ele ainda não existir:
 
 ```bash
 terraform -chdir=infra/bootstrap/state-backend init -backend=false
@@ -156,7 +105,7 @@ terraform -chdir=infra/bootstrap/state-backend plan -var-file=/secure/path/backe
 terraform -chdir=infra/bootstrap/state-backend apply -var-file=/secure/path/backend.tfvars
 ```
 
-For credential-free local validation:
+Para validação local sem credenciais:
 
 ```bash
 python -m pip install --require-hashes --requirement requirements-test.txt
@@ -172,39 +121,43 @@ terraform -chdir=infra/platform test
 bash -n scripts/deploy-platform.sh
 ```
 
-The shared `scripts/infra_contract.py`, its tests, and the versioned JSON schema are distributed from the public metadata-contract implementation. The deploy script passes the flat result of `terraform output -json deployment_outputs` to that CLI.
+O utilitário compartilhado `scripts/infra_contract.py`, seus testes e o schema JSON versionado seguem a implementação pública dos contratos de metadados. O script de implantação passa o objeto de saída de `terraform output -json deployment_outputs` para essa CLI.
 
-## CI and deployment
+<a id="ci-and-deployment"></a>
 
-`quality-gate.yml` runs the Python contract and repository-policy tests, Terraform formatting, offline initialization, validation, mock tests, and shell syntax checks for pull requests and pushes to `develop` or `main`.
+## Integração contínua e implantação
 
-`deploy.yml` repeats the same quality gate for the exact trusted commit and only then deploys a push or manual recovery run whose ref is exactly `develop` or `main`. Configure matching GitHub Environments named `homologation` and `production` with these values:
+`quality-gate.yml` executa testes Python de contratos e políticas do repositório, formatação Terraform, inicialização sem backend, validação, testes com providers simulados e verificação de sintaxe shell em pull requests e pushes para `develop` ou `main`.
+
+`deploy.yml` repete as verificações para o commit confiável exato e só então implanta um push ou uma recuperação manual cuja referência seja exatamente `develop` ou `main`. Configure GitHub Environments correspondentes, chamados `homologation` e `production`, com estes valores:
 
 - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `TF_STATE_BUCKET`, `EKS_CLUSTER_ROLE_ARN`, `EKS_NODE_ROLE_ARN`.
-- Variables: `TF_OWNER`, `TF_EXPIRES_ON`, `BOOTSTRAP_ADMIN_EMAIL`, `SNS_NOTIFICATION_EMAIL`, `EKS_PUBLIC_ACCESS_CIDRS` as a JSON string array, and optionally `EKS_VERSION`.
-- Additional protected variable for ingress/edge deployment: `AWS_ACCOUNT_ID`, matched against STS and all contract ARNs.
+- Variáveis: `TF_OWNER`, `TF_EXPIRES_ON`, `BOOTSTRAP_ADMIN_EMAIL`, `SNS_NOTIFICATION_EMAIL`, `EKS_PUBLIC_ACCESS_CIDRS` como um array JSON de strings e, opcionalmente, `EKS_VERSION`.
+- Variável protegida adicional para ingress/edge: `AWS_ACCOUNT_ID`, comparada com STS e todos os ARNs dos contratos.
 
-The deployment performs live STS account matching, EKS support and zonal `t3.small` offering checks. Before Terraform planning, it obtains the current trusted hosted runner's egress address over HTTPS, validates that it is a globally routable IPv4 address, and appends its exact `/32` to the configured operator/control CIDRs. The configured CIDRs remain intact. If the address cannot be determined and validated, deployment stops before planning or applying; it never substitutes a wide-open CIDR. Each later deployment recalculates the runner `/32`, so a new hosted runner replaces the previous transient runner entry while preserving the Environment configuration.
+A implantação consulta STS para conferir a conta, verifica o suporte da versão do EKS e a oferta de `t3.small` nas zonas. Antes do planejamento Terraform, obtém por HTTPS o endereço de saída do runner hospedado confiável, valida que é um IPv4 publicamente roteável e acrescenta seu `/32` exato aos CIDRs configurados dos operadores. Os CIDRs configurados são preservados. Se o endereço não puder ser obtido e validado, a implantação para antes de planejar ou aplicar; não substitui a restrição por um CIDR aberto. Cada implantação recalcula o `/32` do runner, substituindo a entrada temporária anterior e preservando a configuração do Environment.
 
-After that preflight, the script initializes the environment-specific backend, applies the exact saved plan from `RUNNER_TEMP`, waits for an active cluster, and polls Kubernetes with a bounded per-request timeout until two nodes are Ready. Transient Kubernetes API failures are retried until the overall deadline; persistent failures stop contract publication with the last request outcome. Only after readiness does it validate the contract and publish its immutable revision before the stable key. This code is under review and has credential-free local coverage; no live Phase 3 deployment is claimed.
+Após essa pré-validação, o script inicializa o backend específico do ambiente, aplica o plano salvo em `RUNNER_TEMP`, espera o cluster ficar ativo e consulta o Kubernetes, com tempo limite por requisição, até que dois nós estejam Ready. Falhas transitórias da API Kubernetes são repetidas até o prazo global; falhas persistentes impedem a publicação do contrato e registram o último resultado. Somente após essa verificação o contrato é validado e sua revisão imutável é publicada antes da chave estável.
 
-AWS Academy credentials and resources are temporary and the working session lasts about four hours. Prepare and pass all local checks before starting a session, refresh each Environment's temporary credentials, and leave enough time for EKS provisioning and verification. Live provisioning, state migration from Phase 2, repository protection, and remote publication are separate coordinated operations; local validation does not perform them.
+As credenciais e os recursos da AWS Academy são temporários, com sessão de aproximadamente quatro horas. Prepare e aprove as verificações locais antes de iniciar a sessão, renove as credenciais temporárias de cada Environment e reserve tempo para provisionar e verificar o EKS. Provisionamento real, migração do estado da Fase 2, proteção dos repositórios e publicação remota são operações coordenadas separadamente; a validação local não as executa.
 
-The shared contract utility restricts input and output paths to RUNNER_TEMP, or the operating system temporary directory when RUNNER_TEMP is absent. Relative paths resolve inside that directory; absolute paths and resolved symlinks must stay within it. Test dependencies, including transitive packages, are pinned with hashes in requirements-test.txt.
+O utilitário de contratos restringe os caminhos de entrada e saída a `RUNNER_TEMP` ou, quando ausente, ao diretório temporário do sistema operacional. Caminhos relativos são resolvidos dentro desse diretório; caminhos absolutos e links simbólicos resolvidos também devem permanecer nele. As dependências de teste, inclusive transitivas, têm versões e hashes fixados em `requirements-test.txt`.
 
-## Private ingress and public edge
+<a id="private-ingress-and-public-edge"></a>
 
-Provision in this order: **platform → database and ingress → application → serverless → edge**. The platform workflow reconciles ingress after platform readiness. The serverless pipeline calls the reusable platform edge workflow after successful alias deployment, using the matching protected branch and inherited Environment settings. `Deploy Private Ingress or Edge` also accepts manual `ingress` or `edge` recovery runs on protected branches; it has no independent push trigger. Edge checks that deployed aliases use the current platform secrets, ingress address and network, and that application targets are healthy. Its quality gate records the exact platform commit, which the deploy job checks out. Separate Terraform state keys are `phase3/{environment}/ingress.tfstate` and `phase3/{environment}/edge.tfstate`.
+## Entrada privada e borda pública
 
-Ingress publishes `contracts/v2/{environment}/ingress.json`, preceded by an immutable revision. Platform, database and serverless metadata remain version 1. Version 2 explicitly declares `transport=http` and the authentication/VPC Link security groups; it omits `tlsServerName`. Version 1 ingress still requires HTTPS, so old consumers fail closed instead of silently downgrading transport.
+Provisione nesta ordem: **platform → database e ingress → aplicação → serverless → edge**. O workflow da plataforma reconcilia ingress após a plataforma estar pronta. A pipeline serverless chama o workflow reutilizável de edge depois da implantação dos aliases, usando a branch protegida correspondente e as configurações herdadas do Environment. `Deploy Private Ingress or Edge` também aceita recuperações manuais de `ingress` ou `edge` nas branches protegidas; não possui gatilho próprio de push. Edge verifica se os aliases implantados usam os segredos atuais da plataforma, o endereço de ingress e a rede corretos, e se os destinos da aplicação estão saudáveis. A etapa de qualidade registra o commit exato da plataforma que a implantação utiliza. As chaves de estado Terraform são separadas: `phase3/{environment}/ingress.tfstate` e `phase3/{environment}/edge.tfstate`.
 
-The internal ALB accepts port 80 only from the authentication Lambda and VPC Link security groups. It forwards to EKS worker NodePort 30080; that port accepts only the ALB security group. The authentication function can additionally reach port 443 inside the VPC for the existing Secrets Manager endpoint. No NAT, ingress controller, custom domain or ACM certificate is required. Terraform registers the managed node group's Auto Scaling groups with the target group. Reconcile ingress whenever EKS replaces a managed node group/ASG. Ingress publication checks resource availability; the later application deployment checks healthy targets after its NodePort workload is ready.
+Ingress publica `contracts/v2/{environment}/ingress.json`, precedido de uma revisão imutável. Os metadados de plataforma, banco e serverless permanecem na versão 1. A versão 2 declara explicitamente `transport=http` e os grupos de segurança da autenticação e do VPC Link; omite `tlsServerName`. Ingress v1 continua exigindo HTTPS, fazendo consumidores antigos recusarem o contrato em vez de reduzir silenciosamente a proteção do transporte.
 
-Public clients use HTTPS at the managed execute-api endpoint. **The private HTTP hop is unencrypted inside the VPC.** Source security groups restrict reachability and the internal credential verifier additionally requires a short-lived service JWT with a separate signing key. This Academy tradeoff is not equivalent to end-to-end TLS.
+O ALB interno aceita a porta 80 somente dos grupos de segurança da Lambda de autenticação e do VPC Link. Encaminha para o NodePort 30080 dos workers EKS, que aceita somente o grupo de segurança do ALB. A função de autenticação também pode acessar a porta 443 dentro da VPC para alcançar o endpoint existente do Secrets Manager. Não é necessário NAT, ingress controller, domínio próprio ou certificado ACM. Terraform registra os Auto Scaling Groups do grupo de nós gerenciado no target group. Reconcilie ingress sempre que o EKS substituir um grupo de nós/ASG. A publicação de ingress verifica a disponibilidade dos recursos; a implantação posterior da aplicação verifica a saúde dos destinos após seu workload NodePort estar pronto.
 
-The edge consumes platform v1, ingress v2 and serverless v1. The reviewed catalog in `infra/edge/routes.json` exposes 65 explicit routes. Only staff login, customer token issuance and the existing HMAC-protected estimate webhook omit the Lambda authorizer. Other routes require a valid user JWT; the API remains responsible for roles, password-change requirements, customer status and order ownership. Authorizer caching is disabled. Internal verification, probes, API documentation and catch-all routes are absent. Access logs include only request ID, route key, status and latency. Defaults are 20 requests/second with burst 40; login routes use 5/second with burst 10.
+Clientes públicos usam HTTPS no endpoint gerenciado `execute-api`. **O trecho HTTP privado não é criptografado dentro da VPC.** Grupos de segurança de origem restringem o acesso, e o verificador interno de credenciais também exige um JWT de serviço de curta duração, assinado com chave separada. Essa escolha da Academy não equivale a TLS de ponta a ponta.
 
-Run additional root checks locally:
+Edge consome platform v1, ingress v2 e serverless v1. O catálogo revisado em `infra/edge/routes.json` expõe 65 rotas explícitas. Somente o login de funcionários, a emissão de token do cliente e o webhook de decisão de orçamento protegido por HMAC dispensam o Lambda authorizer. As demais rotas exigem JWT de usuário válido; a API continua responsável pelos papéis, troca obrigatória de senha, situação do cliente e propriedade da OS. O cache do authorizer está desabilitado. Verificação interna, probes, documentação da API e rotas genéricas não são expostas. Logs de acesso incluem apenas ID da requisição, chave da rota, status e latência. Os limites padrão são 20 requisições/segundo, com rajada de 40; rotas de login usam 5/segundo, com rajada de 10.
+
+Execute também as verificações locais dos roots adicionais:
 
 ```bash
 for root in ingress edge; do
@@ -215,83 +168,85 @@ done
 bash -n scripts/deploy-ingress.sh scripts/deploy-edge.sh scripts/deploy-edge-component.sh
 ```
 
-## New Relic observability
+<a id="new-relic-observability"></a>
 
-The opt-in `Deploy Observability` workflow runs after platform deployment and can also be dispatched from `main` (production) or `develop` (homologation). It uses the protected environment and the exact commit checked by the quality gate. Set `NEW_RELIC_ENABLED=true` only after reviewing live node capacity and merging the collector configuration. An absent flag skips installation. Set protected variables `NEW_RELIC_ACCOUNT_ID` (production: `8506965`), `NEW_RELIC_REGION=US`, and `AWS_ACCOUNT_ID`, plus the existing AWS credentials/state bucket and the environment secret `NEW_RELIC_LICENSE_KEY`.
+## Observabilidade com New Relic
 
-Collection uses the official `nr-k8s-otel-collector` chart **0.14.2**, verified against its SHA-256, with NRDOT **1.19.0**, kube-state-metrics chart **8.1.3**, and a pinned Kubernetes **1.36.0** init utility image. Helm **3.19.0** installs one deployment and one collector per node in `newrelic`. The collectors use read-only Kubernetes discovery permissions and export HTTP/protobuf through HTTPS/443 to `https://otlp.nr-data.net`. They require existing outbound connectivity; installation creates no NAT, public receiver, or Lambda instrumentation. See [the architecture decision](docs/adr/0001-newrelic-opentelemetry.md).
+O workflow opcional `Deploy Observability` executa após a implantação da plataforma e também pode ser iniciado manualmente em `main` (produção) ou `develop` (homologação). Usa o ambiente protegido e o commit exato aprovado pelas verificações de qualidade. Defina `NEW_RELIC_ENABLED=true` somente após revisar a capacidade real dos nós e integrar a configuração do coletor. A ausência da flag ignora a instalação. Configure as variáveis protegidas `NEW_RELIC_ACCOUNT_ID` (produção: `8506965`), `NEW_RELIC_REGION=US` e `AWS_ACCOUNT_ID`, além das credenciais AWS e do bucket de estado existentes, e do secret de ambiente `NEW_RELIC_LICENSE_KEY`.
 
-The API contract is `Observability__Enabled=true` and `Observability__OtlpEndpoint=http://garageflow-otel.newrelic.svc.cluster.local:4318`, with service name `garageflow-api`. Enable the API only after the collector is ready. The ClusterIP receiver accepts traces, metrics and logs; API logs arrive through OTLP only. File log pipelines and Kubernetes event collection are disabled. No ingestion key belongs in API configuration. Namespace, pod, node, cluster and environment attributes enrich application telemetry. Keep sensitive payloads, credentials and identifiers out of application telemetry at the source.
+A coleta usa o chart oficial `nr-k8s-otel-collector` **0.14.2**, verificado por SHA-256, com NRDOT **1.19.0**, chart kube-state-metrics **8.1.3** e imagem utilitária Kubernetes **1.36.0** fixada para inicialização. Helm **3.19.0** instala um Deployment e um coletor por nó no namespace `newrelic`. Os coletores usam permissões de descoberta Kubernetes somente de leitura e exportam HTTP/protobuf por HTTPS/443 para `https://otlp.nr-data.net`. Precisam de conectividade de saída existente; a instalação não cria NAT, receptor público ou instrumentação de Lambda. Consulte a [decisão de arquitetura](docs/adr/0001-newrelic-opentelemetry.md).
 
-The daemonset's cloud-provider resource detector is restricted to the local `env` detector. Automatic EC2/EKS cloud discovery can require AWS credentials and abort collector startup in Academy environments. Kubernetes receivers and metadata processors still provide pod/node identity, and the configured chart cluster name remains attached. Automatic cloud provider, account, region, instance and cloud resource-ID enrichment is not promised. Do not add AWS credentials to collector pods or expand IAM, instance metadata access or network routes for this enrichment.
+O contrato da API é `Observability__Enabled=true` e `Observability__OtlpEndpoint=http://garageflow-otel.newrelic.svc.cluster.local:4318`, com nome de serviço `garageflow-api`. Habilite a API somente após o coletor estar pronto. O receptor ClusterIP aceita traces, métricas e logs; os logs da API chegam exclusivamente por OTLP. Pipelines de logs de arquivo e coleta de eventos Kubernetes estão desabilitadas. A configuração da API não recebe chave de ingestão. Atributos de namespace, pod, nó, cluster e ambiente enriquecem a telemetria. Remova dados sensíveis, credenciais e identificadores dos registros na origem.
 
-The ingestion key is passed only to Kubernetes Secret creation through stdin, using server-side apply without a last-applied annotation. It is excluded from child environments, Helm values/release history, Terraform state and command/error output. The referenced Secret stays outside Helm ownership. Successful upgrades restart collectors to pick up key rotations. The workflow temporarily adds the actual runner IPv4 `/32` to a scoped EKS endpoint configuration and uses a temporary kubeconfig. Cleanup waits for submitted EKS updates and restores the original endpoint configuration only if it still matches the owned grant. A concurrent change or an unknown submission outcome preserves the lease and fails rather than overwriting access. An `always()` step retries cleanup; inspect the EKS update and reconcile the retained runner lease if credentials expire, a run is forcibly terminated, or another deploy modifies the endpoint concurrently.
+O detector de recursos de nuvem do DaemonSet fica restrito ao detector local `env`. A descoberta automática EC2/EKS pode exigir credenciais AWS e interromper a inicialização do coletor na Academy. Receptores Kubernetes e processadores de metadados continuam fornecendo a identidade dos pods/nós e o nome do cluster configurado no chart. Não há garantia de enriquecimento automático com provedor, conta, região, instância e ID de recurso de nuvem. Não adicione credenciais AWS aos pods dos coletores nem amplie IAM, acesso a metadados de instância ou rotas de rede para obter esse enriquecimento.
 
-For two nodes, steady requests are **480 MiB and 325m CPU**, and limits are **704 MiB and 1600m CPU**. Rolling deployment and kube-state-metrics updates can add up to **320 MiB and 600m CPU** in limits. DaemonSet init containers inherit the daemonset budget. These are bounded initial settings, not evidence that existing nodes have sufficient headroom. Review per-node allocatable resources, existing requests, actual memory, pod slots and rollout placement before enabling; do not increase node counts or alter application HPA targets as part of this install. Collectors use memory limiting, Go memory targets, batching, a 64-batch export queue and retries capped at 60 seconds. Backend failure can discard telemetry; it must not block business operations.
+A chave de ingestão é passada somente à criação do Secret Kubernetes pela entrada padrão, usando aplicação no servidor sem anotação `last-applied`. Ela não entra nos ambientes de processos filhos, valores/histórico do Helm, estado Terraform ou saída de comandos/erros. O Secret referenciado fica fora da gestão do Helm. Atualizações bem-sucedidas reiniciam os coletores para incorporar a rotação da chave. O workflow acrescenta temporariamente o IPv4 `/32` real do runner ao acesso ao endpoint EKS e usa um kubeconfig temporário. A limpeza espera as atualizações EKS submetidas e restaura a configuração original somente se ainda corresponder à concessão criada pela execução. Uma alteração concorrente ou resultado desconhecido preserva a concessão e falha, evitando sobrescrever o acesso. Uma etapa `always()` repete a limpeza; inspecione a atualização do EKS e reconcilie a concessão retida se as credenciais expirarem, a execução for encerrada à força ou outra implantação modificar o endpoint simultaneamente.
 
-Render a dashboard to an external path and import its JSON in New Relic. The technical dashboard remains the default:
+Para dois nós, as reservas estáveis são **480 MiB e 325m de CPU**, e os limites são **704 MiB e 1600m de CPU**. Atualizações graduais do Deployment e kube-state-metrics podem acrescentar até **320 MiB e 600m de CPU** aos limites. Contêineres de inicialização do DaemonSet herdam seu orçamento. Esses limites iniciais não comprovam folga suficiente nos nós. Revise capacidade alocável por nó, reservas existentes, memória real, quantidade de pods e distribuição durante atualizações antes de habilitar; não aumente os nós nem altere os alvos do HPA da aplicação nessa instalação. Coletores usam limitação de memória, metas de memória Go, lotes, fila de exportação de 64 lotes e tentativas limitadas a 60 segundos. Falhas do destino podem descartar telemetria, sem bloquear operações de negócio.
+
+Gere os dashboards em um caminho externo e importe seus JSONs no New Relic. O dashboard técnico é o padrão:
 
 ```bash
 python scripts/render_observability_dashboard.py --account-id 8506965 --environment production --output /tmp/garageflow-dashboard.json
 python scripts/render_observability_dashboard.py --dashboard business --account-id 8506965 --environment production --output /tmp/garageflow-business-dashboard.json
 ```
 
-The technical template has six API data widgets and two node CPU/memory data widgets, with Portuguese titles and a reading guide on each page. HTTP percentiles are converted from seconds to milliseconds after aggregation. Request logs display the structured `Method`, `Route`, `StatusCode` and `DurationMs` attributes alongside trace/span IDs; only records with method and route are shown, without interpolating the message template. Node percentage widgets use the chart's generated utilization ratios multiplied by 100. Use New Relic's Kubernetes navigator for pods, deployments, restarts and HPA views. Import/render validation does not prove ingestion or query results. After merged deployment, verify one real request with correlated log/trace, HTTP duration metrics, both nodes and pod metrics, then compare memory/CPU and exporter errors with a baseline. Loss of telemetry is not proof of uptime; health checks and external availability need separate validation. Lambda internals remain outside these dashboards.
+O template técnico possui seis widgets de dados da API e dois de CPU/memória dos nós, com títulos em português e um guia de leitura em cada página. Percentis HTTP são convertidos de segundos para milissegundos após a agregação. Logs de requisição exibem os atributos estruturados `Method`, `Route`, `StatusCode` e `DurationMs`, junto dos IDs de trace/span; somente registros com método e rota aparecem, sem interpolar o template da mensagem. Widgets percentuais dos nós usam as razões de utilização geradas pelo chart, multiplicadas por 100. Use o navegador Kubernetes do New Relic para consultar pods, deployments, reinícios e HPA. Validar importação/renderização não comprova ingestão nem resultados das consultas. Após a implantação, verifique uma requisição real com log/trace correlacionado, métricas de duração HTTP, ambos os nós e métricas de pods; compare memória/CPU e erros de exportação com uma referência. Ausência de telemetria não comprova disponibilidade; health checks e disponibilidade externa exigem validação própria. O funcionamento interno das Lambdas fica fora desses dashboards.
 
-The business template places daily creation and eligible completion volumes side by side, above a full-width daily summary with mean execution minutes and the successful refresh start time. A visible reading guide explains the reporting window and missing samples. Means use a table because a bar visualization can render missing values as zero; empty means remain distinct from recorded zero durations. It covers today and the preceding six civil dates in `America/Sao_Paulo`; today is partial. Creation volume is grouped by `CreatedAt`. Completion count and duration are grouped by `CompletedAt`, using UTC bounds converted from each business date with an inclusive start and exclusive end. Each work order counts once, regardless of its service lines. Only `Completed` or `Delivered` work orders with both timestamps and `CompletedAt >= StartedAt` contribute to the mean of `CompletedAt - StartedAt`. No eligible work orders means count zero and an absent mean; genuinely equal timestamps produce zero minutes. Diagnosis, approval wait, pickup wait and uptime require separate indicators. Integration failures and alert definitions are documented in the processing section below. The existing per-service average retains its own meaning.
+O template de negócio posiciona os volumes diários de criação e conclusão elegível lado a lado, acima de um resumo diário com tempo médio de execução em minutos e início da última atualização bem-sucedida. Um guia explica a janela e a ausência de amostras. As médias usam tabela porque gráficos de barras podem representar valores ausentes como zero; média vazia permanece distinta de duração zero registrada. O período inclui hoje e as seis datas civis anteriores em `America/Sao_Paulo`, com hoje parcial. Criações são agrupadas por `CreatedAt`. Quantidade e duração das conclusões são agrupadas por `CompletedAt`, usando limites UTC convertidos de cada data de negócio, com início inclusivo e fim exclusivo. Cada OS conta uma vez, independentemente de seus serviços. Somente ordens `Completed` ou `Delivered`, com ambos os horários e `CompletedAt >= StartedAt`, contribuem para a média de `CompletedAt - StartedAt`. Sem OS elegíveis, a contagem é zero e a média ausente; horários iguais produzem zero minutos. Diagnóstico, espera de aprovação, espera de retirada e disponibilidade exigem indicadores próprios. Falhas de integração e alertas estão descritos abaixo. A média existente por serviço mantém seu significado próprio.
 
-When API observability is enabled, its `GarageFlow.WorkOrders` meter publishes these database snapshots at startup and every five minutes over the existing OTLP path:
+Quando a observabilidade da API está habilitada, o medidor `GarageFlow.WorkOrders` publica os retratos do banco na inicialização e a cada cinco minutos pelo caminho OTLP existente:
 
-| Gauge | Meaning | Unit |
+| Gauge | Significado | Unidade |
 | --- | --- | --- |
-| `garageflow.work_orders.created` | Work orders created on the business date | Work orders |
-| `garageflow.work_orders.completed` | Eligible work orders completed on the business date | Work orders |
-| `garageflow.work_orders.duration.mean` | Mean elapsed completion; omitted without samples | Seconds |
-| `garageflow.work_orders.snapshot.timestamp` | Start time of the last successful refresh | Unix seconds |
+| `garageflow.work_orders.created` | Ordens criadas na data de negócio | Ordens de serviço |
+| `garageflow.work_orders.completed` | Ordens elegíveis concluídas na data de negócio | Ordens de serviço |
+| `garageflow.work_orders.duration.mean` | Tempo médio de execução; omitido sem amostras | Segundos |
+| `garageflow.work_orders.snapshot.timestamp` | Início da última atualização bem-sucedida | Segundos Unix |
 
-The only business dimensions are `work_orders.date` and `work_orders.timezone`, alongside existing service, environment and instance resource attributes. The queries filter service and environment, use `latest(...)` per `work_orders.date`, and limit the result to seven dates. Summing or averaging snapshots across replicas or export intervals would distort the counts and means. The mean query divides seconds by 60 and returns null when the latest eligible count is zero. The freshness table converts Unix seconds to milliseconds for `toDatetime` and displays Sao Paulo local time. These expressions follow the [NRQL function reference](https://docs.newrelic.com/docs/nrql/nrql-syntax-clauses-functions/) and [dimensional metric query guidance](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-metric-data-type/).
+As únicas dimensões de negócio são `work_orders.date` e `work_orders.timezone`, além dos atributos existentes de serviço, ambiente e instância. As consultas filtram serviço e ambiente, usam `latest(...)` por `work_orders.date` e limitam o resultado a sete datas. Somar ou tirar médias dos retratos entre réplicas ou intervalos de exportação distorceria os resultados. A consulta da média divide segundos por 60 e retorna null quando a última contagem elegível é zero. A tabela de atualização converte segundos Unix para milissegundos em `toDatetime` e exibe o horário local de São Paulo. As expressões seguem a [referência de funções NRQL](https://docs.newrelic.com/docs/nrql/nrql-syntax-clauses-functions/) e a [orientação de consulta de métricas dimensionais](https://docs.newrelic.com/docs/data-apis/understand-data/metric-data/query-metric-data-type/).
 
-`SINCE 15 minutes ago` is a telemetry capture window, not a fifteen-minute business period. Daily snapshot widgets ignore the dashboard time picker to preserve this fixed capture window; the technical dashboard and business failure page follow the selected time range. The publisher suppresses snapshots older than ten minutes, but previously ingested samples remain visible within the capture window. Check the refresh timestamp before interpreting a chart; an empty chart is not proof of zero business activity. Around midnight, the capture window can briefly include eight dates. `FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7` selects the seven dates from the newest successfully refreshed batch, keeping an older date from displacing today. This maximum only ranks date facets; displayed counts and means still use `latest`. All seven dates share the start time of their successful refresh, and the reporting date is derived from that same instant. A batch started before midnight therefore ranks below one started after midnight even if they finish out of order. Before the first post-midnight refresh arrives, the last available batch remains visible with its original refresh timestamp. Validate dashboard queries in New Relic after the application version containing these gauges is deployed, including known zero-sample dates, real zero durations and multiple replicas, then compare the values against persisted work orders. Rendering this file alone does not prove ingestion or production acceptance.
+`SINCE 15 minutes ago` é uma janela de captura de telemetria, não um período de negócio de quinze minutos. Os widgets de retratos diários ignoram o seletor de tempo para preservar essa janela fixa; o dashboard técnico e a página de falhas seguem o período selecionado. O publicador suprime retratos com mais de dez minutos, mas amostras já ingeridas permanecem visíveis dentro da janela de captura. Confira o horário de atualização antes de interpretar o gráfico; um gráfico vazio não comprova ausência de atividade. Perto da meia-noite, a janela pode incluir oito datas temporariamente. `FACET work_orders.date ORDER BY max(garageflow.work_orders.snapshot.timestamp) LIMIT 7` seleciona as sete datas do lote atualizado mais recente, evitando que uma data antiga substitua hoje. Esse máximo apenas ordena as datas; contagens e médias exibidas continuam usando `latest`. As sete datas compartilham o início da atualização bem-sucedida, e a data de referência deriva desse mesmo instante. Um lote iniciado antes da meia-noite fica abaixo de um iniciado depois, mesmo que terminem fora de ordem. Antes da primeira atualização após a meia-noite, o último lote disponível permanece visível com seu horário original. Valide as consultas no New Relic após implantar a versão da API com esses gauges, incluindo datas sem amostras, durações zero reais e múltiplas réplicas; compare com as ordens persistidas. Apenas gerar esse arquivo não comprova ingestão ou aceite em produção.
 
-### Processing failures and notification integration
+### Falhas de processamento e integração de notificações
 
-The business dashboard also has a **Falhas e integrações** page. It follows the dashboard time picker, independently of the fixed daily snapshot page. HTTP failures are 5xx responses on `/work-orders`, its children, `/me/work-orders`, its children and `/webhooks/estimate-decisions`. Expected 4xx responses are not technical failures. These are API-side measurements; Lambda and API Gateway failures that never reach the API are not covered.
+O dashboard de negócio também possui a página **Falhas e integrações**, que segue o seletor de tempo independentemente dos retratos diários. Falhas HTTP são respostas 5xx em `/work-orders`, suas subrotas, `/me/work-orders`, suas subrotas e `/webhooks/estimate-decisions`. Respostas 4xx esperadas não são falhas técnicas. A medição ocorre na API; falhas da Lambda ou do API Gateway que não chegam à aplicação ficam fora da cobertura.
 
-The API's `GarageFlow.Integrations` meter publishes non-sampled counters through the existing collector:
+O medidor `GarageFlow.Integrations` da API publica contadores sem amostragem pelo coletor existente:
 
-| Counter | Dimensions | Meaning |
+| Contador | Dimensões | Significado |
 | --- | --- | --- |
-| `garageflow.integration.outbox.results` | `outbox.outcome`, `outbox.failure.kind` | Completed outbox processing results, including rescheduling and lost ownership |
-| `garageflow.integration.outbox.polls` | `outbox.outcome` | Successful or failed polling cycles |
+| `garageflow.integration.outbox.results` | `outbox.outcome`, `outbox.failure.kind` | Resultados de processamento do outbox, incluindo reagendamento e perda de posse |
+| `garageflow.integration.outbox.polls` | `outbox.outcome` | Ciclos de consulta bem-sucedidos ou com falha |
 
-Result outcomes are `processed`, `rescheduled` and `ownership_lost`. Failure kinds are `none`, `unsupported_event`, `invalid_payload`, `publish_failed` and `timeout`. Poll outcomes are `success` and `failure`. Counters are summed across replicas; unlike daily database snapshot gauges, they must not use `latest`. Retried notifications can produce multiple results for one OS. A successful SNS publication means SNS accepted the request, not that an email reached its recipient. A persistence failure before confirming the result is counted as a failed poll, which can also contain earlier successfully processed messages.
+Resultados possíveis: `processed`, `rescheduled` e `ownership_lost`. Tipos de falha: `none`, `unsupported_event`, `invalid_payload`, `publish_failed` e `timeout`. Resultados de consulta: `success` e `failure`. Contadores são somados entre réplicas; diferentemente dos gauges diários, não usam `latest`. Novas tentativas de notificação podem gerar múltiplos resultados para uma OS. Publicação bem-sucedida no SNS significa que ele aceitou a requisição, não que o e-mail chegou ao destinatário. Uma falha de persistência antes da confirmação do resultado conta como consulta com falha, que também pode conter mensagens processadas com sucesso anteriormente.
 
-Structured operational logs use `EventName` (`OutboxResult` or `OutboxPollFailure`), `Outcome`, `FailureKind` and a validated `CorrelationId`. The latter references the originating trace when available; it does not establish an outbox/Lambda parent span. Payloads and exception text are excluded. The dashboard requires the application version exporting these signals; importing its JSON alone does not activate or verify instrumentation.
+Logs operacionais estruturados usam `EventName` (`OutboxResult` ou `OutboxPollFailure`), `Outcome`, `FailureKind` e `CorrelationId` validado. Este último referencia o trace de origem quando disponível; não estabelece um span pai de outbox/Lambda. Payloads e textos de exceção são excluídos. O dashboard depende da versão da aplicação que exporta esses sinais; importar o JSON não ativa nem verifica a instrumentação.
 
-### Operational alert definitions
+### Definições de alertas operacionais
 
-Render disabled conditions and NerdGraph operations to an external file:
+Gere as condições desabilitadas e as operações NerdGraph em um arquivo externo:
 
 ```bash
 python scripts/render_observability_alerts.py --account-id 8506965 --environment production --output /tmp/garageflow-processing-alerts.json
 ```
 
-This output is an alert definition bundle, **not a dashboard-import JSON**. It contains a policy lookup, a create-policy mutation, three create-condition mutations and their settings. Use the New Relic UI or authenticated NerdGraph explorer to apply them:
+A saída é um conjunto de definições de alerta, **não um JSON de importação de dashboard**. Contém consulta de política, uma mutação de criação de política, três mutações de criação de condições e suas configurações. Aplique pela interface do New Relic ou pelo explorador NerdGraph autenticado:
 
-1. Execute `policyLookup` and check for an exact environment-specific policy/condition name before creating anything. Create mutations are not idempotent. Reuse matching resources; edit existing conditions instead of rerunning create mutations.
-2. If the policy does not exist, execute `policyMutation` and retain the returned ID. Supply that ID in the GraphQL variables object as `policyId` when executing each `conditionMutations` entry.
-3. Keep all three conditions disabled until the merged application exports the expected data. Configure an email destination and notification workflow in New Relic, filtered to this policy. Keep the recipient and any management credentials outside the repository. An ingest license key is not a management credential.
-4. After validating data and the destination, enable the conditions. Verify one controlled failure and subsequent recovery in a test environment before production activation. Record the incident and notification evidence externally.
+1. Execute `policyLookup` e procure o nome exato da política/condição do ambiente antes de criar recursos. Mutações de criação não são idempotentes. Reutilize recursos correspondentes e edite condições existentes, evitando repetir criações.
+2. Se a política não existir, execute `policyMutation` e guarde o ID retornado. Informe esse ID como `policyId` nas variáveis GraphQL ao executar cada entrada de `conditionMutations`.
+3. Mantenha as três condições desabilitadas até a aplicação integrada exportar os dados esperados. Configure um destino de e-mail e um workflow de notificações filtrado para a política. Mantenha destinatário e credenciais de gestão fora do repositório. A chave de licença de ingestão não é uma credencial de gestão.
+4. Após validar os dados e o destino, habilite as condições. Verifique uma falha controlada e a recuperação em ambiente de teste antes da ativação em produção. Registre as evidências do incidente e das notificações externamente.
 
-The initial laboratory threshold is more than zero failures in at least one 60-second window, with `EVENT_FLOW` aggregation and a 120-second delay. Separate conditions cover OS HTTP 5xx, outbox results whose failure kind is not `none`, and failed polls. These initial values should be tuned against observed traffic. The delay means notification is not instantaneous.
+O limite inicial de laboratório é mais de zero falhas em pelo menos uma janela de 60 segundos, com agregação `EVENT_FLOW` e atraso de 120 segundos. Condições separadas cobrem HTTP 5xx de OS, resultados de outbox cujo tipo de falha difere de `none` e consultas com falha. Ajuste os valores iniciais conforme o tráfego observado. O atraso significa que a notificação não é imediata.
 
-HTTP alert filtering occurs inside the aggregation, allowing normal request traffic to yield zero. Outbox counters expose zero observations during active polls. There is no artificial gap fill or loss-of-signal recovery: a stopped Academy session must not be interpreted as healthy processing. The maximum incident lifetime is 24 hours; automatic closure at that limit does not prove recovery. Uptime/loss-of-signal alerts remain a separate concern.
+O filtro de alerta HTTP fica dentro da agregação, permitindo que tráfego normal produza zero. Contadores de outbox expõem observações zero durante consultas ativas. Não há preenchimento artificial de lacunas nem recuperação por perda de sinal: uma sessão Academy parada não deve ser interpretada como processamento saudável. A duração máxima de incidente é 24 horas; o fechamento automático nesse limite não comprova recuperação. Alertas de disponibilidade/perda de sinal são uma preocupação separada.
 
-For investigation, open the failure page for the incident window, identify the route or failure kind, and use the trace/correlation reference when available. For notification failures, inspect SNS configuration and outbox processing; preserve retries and pending messages. For polling failures, verify database access and worker health. Confirm resumed successful polling and zero new failures before declaring recovery. Do not disable permissions, corrupt production messages or expose a fault endpoint to manufacture an alert.
+Para investigar, abra a página de falhas na janela do incidente, identifique a rota ou o tipo de falha e use a referência de trace/correlação quando disponível. Para falhas de notificação, inspecione SNS e processamento de outbox, preservando novas tentativas e mensagens pendentes. Para falhas de consulta, verifique o acesso ao banco e a saúde do worker. Confirme a retomada das consultas bem-sucedidas e a ausência de novas falhas antes de declarar recuperação. Não remova permissões, corrompa mensagens de produção ou exponha um endpoint de falha para fabricar um alerta.
 
-The settings follow the official [NRQL condition API](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-nrql-condition-alerts/), [signal-loss and gap-fill guidance](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-loss-signal-gap-filling/), and [notification workflow model](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-workflows/). Applying definitions, receiving telemetry and delivering a notification are separate acceptance steps.
+As configurações seguem a [API oficial de condições NRQL](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-nrql-condition-alerts/), as [orientações de perda de sinal e preenchimento de lacunas](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-loss-signal-gap-filling/) e o [modelo de workflows de notificação](https://docs.newrelic.com/docs/apis/nerdgraph/examples/nerdgraph-api-workflows/). Aplicar definições, receber telemetria e entregar uma notificação são etapas de aceite distintas.
 
-Useful initial queries (select the intended New Relic account):
+Consultas iniciais úteis (selecione a conta New Relic desejada):
 
 ```sql
 FROM Span SELECT count(*) WHERE service.name = 'garageflow-api' FACET deployment.environment.name SINCE 30 minutes ago
