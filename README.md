@@ -1,32 +1,138 @@
-# GarageFlow Platform Infrastructure
+# GarageFlow — Plataforma Kubernetes
 
-This repository defines three independently testable Phase 3 roots: platform, private ingress and public edge. They own the shared AWS network, EKS, ECR, SNS, application secrets, internal ALB and API Gateway configuration. The code has credential-free local tests; local verification does not demonstrate a live deployment.
+Este README é a documentação principal da infraestrutura compartilhada, rede, entrada da API e observabilidade. Três roots Terraform independentes compõem a plataforma: `platform`, `ingress` e `edge`. A operação detalhada e os parâmetros dos artefatos estão nas seções abaixo.
+
+## Sumário
+
+- [Visão de componentes na nuvem](#visão-de-componentes-na-nuvem)
+- [Responsabilidade dos artefatos](#responsabilidade-dos-artefatos)
+- [Rede e escalabilidade](#rede-e-escalabilidade)
+- [Ordem de deploy e contratos](#ordem-de-deploy-e-contratos)
+- [Acesso e documentação das APIs](#acesso-e-documentação-das-apis)
+- [Configuration](#configuration)
+- [CI and deployment](#ci-and-deployment)
+- [Private ingress and public edge](#private-ingress-and-public-edge)
+- [New Relic observability](#new-relic-observability)
+
+## Visão de componentes na nuvem
+
+Este é o diagrama integrado da Fase 3. Os componentes externos a este repositório estão identificados; cada README detalha seus próprios artefatos.
+
+```mermaid
+flowchart TB
+    Client[Cliente ou funcionário] -->|HTTPS| Gateway
+    subgraph AWS["AWS Academy - us-east-1"]
+        Gateway[API Gateway HTTP API]
+        Authorizer[Lambda authorizer - repo serverless]
+        Gateway -->|JWT nas rotas protegidas| Authorizer
+        subgraph VPC["VPC do ambiente"]
+            subgraph Private["Subnets privadas de aplicação"]
+                Auth[Lambda CPF - repo serverless]
+                Link[VPC Link]
+                ALB[ALB interno - ingress]
+                VPCE[Endpoint privado Secrets Manager]
+            end
+            subgraph Workers["Subnets públicas dos workers"]
+                EKS[EKS - dois nós]
+                API[API e HPA - repo aplicação]
+                Collector[Coletor OTLP e métricas Kubernetes]
+                EKS --- API
+                EKS --- Collector
+            end
+            subgraph Database["Subnets dedicadas ao banco"]
+                RDS[(RDS PostgreSQL - repo banco)]
+            end
+            Link -->|HTTP 80| ALB
+            Auth -->|HTTP 80 e JWT de serviço| ALB
+            ALB -->|NodePort 30080| API
+            API -->|PostgreSQL 5432| RDS
+            API -->|OTLP privado 4318| Collector
+            Auth --> VPCE
+        end
+        Secrets[Secrets Manager]
+        SNS[SNS: notificações]
+        ECR[ECR: imagem por SHA]
+        S3[(S3: states e contratos)]
+        VPCE --> Secrets
+        Authorizer --> Secrets
+        API --> SNS
+        ECR --> API
+        Gateway -->|login CPF| Auth
+        Gateway -->|integração privada| Link
+    end
+    Actions[GitHub Actions dos quatro projetos] -->|Terraform e contratos| S3
+    Actions -->|deploy| EKS
+    Collector -->|HTTPS 443| NR[New Relic: dashboards e alertas]
+```
+
+As setas representam tráfego/dependências operacionais, não permissões de IAM. Roles preexistentes da Academy são entradas dos roots. O desenho não cria roles próprias, NAT gateway, domínio customizado ou certificado ACM. API pública usa HTTPS gerenciado; HTTP privado na VPC não tem criptografia de transporte.
+
+## Responsabilidade dos artefatos
+
+| Artefato | Propriedade |
+| --- | --- |
+| [Bootstrap S3](infra/bootstrap/state-backend) | Backend versionado/criptografado, criado somente se necessário |
+| [Root platform](infra/platform) | VPC, subnets, EKS, ECR, SNS, segredos comuns, endpoint Secrets Manager e HTTP API base |
+| [Root ingress](infra/ingress) | ALB interno, SGs, target group e associação aos ASGs do node group |
+| [Root edge e rotas](infra/edge/routes.json) | VPC Link, integrações, authorizer, catálogo explícito e stage |
+| [Observabilidade](observability) | Configuração de coleta, templates técnicos/de negócio e alertas |
+| [Deploy platform](.github/workflows/deploy.yml) | Plataforma, seguida de ingress e coleta opt-in |
+| [Deploy ingress/edge reutilizável](.github/workflows/deploy-edge.yml) | Implementação central usada também pelo deploy serverless |
+| [Deploy observability](.github/workflows/deploy-observability.yml) | Coletor, segredo de ingestão e validações |
+
+O [banco](https://github.com/DiegoRugue/garageflow-infra-database#readme) é dono do RDS e seu segredo. [Serverless](https://github.com/DiegoRugue/garageflow-serverless#readme) é dono das funções, aliases e permissões de invocação. A [aplicação](https://github.com/DiegoRugue/GarageFlow#readme) é dona da imagem, migrations, Deployment, Service e HPA. Os roots não importam módulos de outro checkout nem leem state de outro produtor.
+
+## Rede e escalabilidade
+
+São duas AZs, com duas subnets públicas de workers, duas privadas de aplicação e duas de banco. As privadas têm rota local da VPC, sem NAT. Colocar Lambda em subnet pública não é estratégia de acesso à internet; autenticação usa o endpoint privado do Secrets Manager.
+
+| Caminho | Restrição |
+| --- | --- |
+| Gateway → API | VPC Link → ALB interno; rotas explicitamente cadastradas |
+| Lambda CPF → API | SG de autenticação → ALB e JWT de serviço no verificador |
+| ALB → workers | NodePort 30080 aceita apenas o SG do ALB |
+| EKS → RDS | TCP 5432 permitido pelo SG do banco para o SG do EKS |
+| API → New Relic | Coletor ClusterIP; saída HTTPS; nenhuma chave de ingestão na API |
+
+EKS usa dois nós `t3.small` e papéis preexistentes. O [HPA da aplicação](https://github.com/DiegoRugue/GarageFlow/blob/main/k8s/hpa.yaml) varia de 2 a 6 pods por CPU/memória, com Metrics Server. Isso escala pods dentro da capacidade disponível; não constitui Cluster Autoscaler nem garante que seis réplicas caibam em qualquer carga. A distribuição real depende do scheduler e dos recursos dos nós. RDS Single-AZ é uma limitação de disponibilidade descrita no README do banco.
+
+## Ordem de deploy e contratos
 
 ```mermaid
 flowchart LR
-    Backend[S3 state and contracts] --> Platform[platform root]
-    Platform --> Network[VPC and three subnet classes]
-    Network --> Public[Public EKS worker subnets]
-    Network --> App[Private application subnets]
-    Network --> DB[Dedicated database subnets]
-    App --> SecretsEndpoint[Secrets Manager interface endpoint]
-    Platform --> EKS[EKS: two t3.small nodes]
-    Platform --> ECR[ECR]
-    Platform --> SNS[SNS]
-    Platform --> Secrets[JWT, internal auth, bootstrap, webhook]
-    Platform --> API[Empty HTTP API]
-    Platform --> Contract[Platform metadata contract]
-    Contract --> Database[Database infrastructure repository]
-    Contract --> Later[GarageFlow application and later ingress, serverless and edge roots]
+    Bootstrap[Backend S3 existente] --> Platform[platform v1]
+    Platform --> Database[database v1 - repo banco]
+    Platform --> Ingress[ingress v2]
+    Database --> App[Aplicação: migrations e workload]
+    Ingress --> App
+    App --> Lambda[serverless v1 - funções e aliases]
+    Ingress --> Lambda
+    Lambda --> Edge[edge: rotas públicas]
+    Platform --> Observe[Coleta New Relic opt-in]
+    Observe -.->|habilitar exportação após coletor pronto| App
 ```
 
-The `homologation` and `production` environments have separate names, VPC CIDRs, secrets, resources, concurrency groups, and state keys. `develop` deploys only `homologation`; `main` deploys only `production`. The platform state is stored at `phase3/{environment}/platform.tfstate`. The same protected `TF_STATE_BUCKET` holds versioned public metadata under `contracts/v1/{environment}/platform/...`; contracts contain resource IDs, URLs, and ARNs, never secret values.
+Cada produtor grava revisão imutável antes do contrato estável no S3. Platform/database/serverless usam v1; ingress usa v2 para declarar `transport=http` explicitamente. Consumers validam versão, produtor, ambiente, conta e identidade dos recursos. Segredos e state não fazem parte desses manifests.
 
-## Current ownership
+Branches de deploy: `develop` → `homologation`, `main` → `production`. Estados, nomes, CIDRs e concurrency são separados por ambiente. Criar branches, Environments, secrets e proteção com PR/checks obrigatórios é parte do setup, não efeito do YAML. A configuração de homologação não deve ser confundida com uma execução já verificada.
 
-The platform creates two public subnets for EKS workers, two private application subnets, and two dedicated database subnets across the first two available `us-east-1` availability zones. Private subnets have explicit route tables with only the implicit VPC-local route. There is no NAT gateway and no assumption that placing future Lambda functions in public subnets provides egress. A private-DNS Secrets Manager interface endpoint is attached to the application subnets for later VPC functions.
+## Acesso e documentação das APIs
 
-EKS uses pre-existing Academy roles and two on-demand `t3.small` nodes with standard support policy. This repository does not create IAM roles. The platform root leaves its HTTP API empty; the separate edge root adds its VPC Link, integrations, authorizer, explicit routes and stage. Lambda functions and invoke permissions belong to the serverless repository. RDS and its credential secret belong exclusively to [garageflow-infra-database](https://github.com/DiegoRugue/garageflow-infra-database). The application remains in [GarageFlow](https://github.com/DiegoRugue/GarageFlow).
+O contrato platform v1 publica `apiGatewayId`. A implantação edge adiciona o stage `$default` e as rotas. Consulte o ID no contrato do ambiente autorizado e obtenha o endpoint pela API AWS:
+
+```bash
+API_ID=$(aws s3 cp "s3://${TF_STATE_BUCKET}/contracts/v1/production/platform.json" - | python -c "import json,sys; print(json.load(sys.stdin)['outputs']['apiGatewayId'])")
+aws apigatewayv2 get-api --region us-east-1 --api-id "$API_ID" --query ApiEndpoint --output text
+```
+
+Troque `production` por `homologation` quando esse ambiente estiver provisionado. A URL pode mudar se a infraestrutura for recriada. Na Academy, disponibilidade depende da sessão temporária de cerca de quatro horas e das pipelines concluídas.
+
+- [OpenAPI/Scalar da API e acesso local autorizado](https://github.com/DiegoRugue/GarageFlow#execução-e-documentação-da-api).
+- [Contrato HTTP do login CPF para Postman](https://github.com/DiegoRugue/garageflow-serverless#contrato-http).
+- [Pipelines da plataforma](https://github.com/DiegoRugue/garageflow-infra-kubernetes/actions).
+- [Dashboard técnico](https://one.newrelic.com/dashboards/detail/ODUwNjk2NXxWSVp8REFTSEJPQVJEfGRhOjEzMTcxNTM2?account=8506965) e [dashboard de negócio](https://one.newrelic.com/dashboards/detail/ODUwNjk2NXxWSVp8REFTSEJPQVJEfGRhOjEzMTcxNTQx?account=8506965), sujeitos ao acesso à conta New Relic.
+
+Não há Swagger próprio para Terraform. O Gateway não publica `/internal/*`, probes, OpenAPI/Scalar ou catch-all. O coletor e banco também não expõem interfaces HTTP públicas. Dockerfile próprio não se aplica a este projeto; a coleta usa imagens de terceiros fixadas na configuração.
 
 ## Configuration
 
@@ -132,7 +238,7 @@ python scripts/render_observability_dashboard.py --dashboard business --account-
 
 The technical template has six API data widgets and two node CPU/memory data widgets, with Portuguese titles and a reading guide on each page. HTTP percentiles are converted from seconds to milliseconds after aggregation. Request logs display the structured `Method`, `Route`, `StatusCode` and `DurationMs` attributes alongside trace/span IDs; only records with method and route are shown, without interpolating the message template. Node percentage widgets use the chart's generated utilization ratios multiplied by 100. Use New Relic's Kubernetes navigator for pods, deployments, restarts and HPA views. Import/render validation does not prove ingestion or query results. After merged deployment, verify one real request with correlated log/trace, HTTP duration metrics, both nodes and pod metrics, then compare memory/CPU and exporter errors with a baseline. Loss of telemetry is not proof of uptime; health checks and external availability need separate validation. Lambda internals remain outside these dashboards.
 
-The business template places daily creation and eligible completion volumes side by side, above a full-width daily summary with mean execution minutes and the successful refresh start time. A visible reading guide explains the reporting window and missing samples. Means use a table because a bar visualization can render missing values as zero; empty means remain distinct from recorded zero durations. It covers today and the preceding six civil dates in `America/Sao_Paulo`; today is partial. Creation volume is grouped by `CreatedAt`. Completion count and duration are grouped by `CompletedAt`, using UTC bounds converted from each business date with an inclusive start and exclusive end. Each work order counts once, regardless of its service lines. Only `Completed` or `Delivered` work orders with both timestamps and `CompletedAt >= StartedAt` contribute to the mean of `CompletedAt - StartedAt`. No eligible work orders means count zero and an absent mean; genuinely equal timestamps produce zero minutes. Diagnosis, approval wait, pickup wait, integration failures, alerts and uptime require separate indicators. The existing per-service average retains its own meaning.
+The business template places daily creation and eligible completion volumes side by side, above a full-width daily summary with mean execution minutes and the successful refresh start time. A visible reading guide explains the reporting window and missing samples. Means use a table because a bar visualization can render missing values as zero; empty means remain distinct from recorded zero durations. It covers today and the preceding six civil dates in `America/Sao_Paulo`; today is partial. Creation volume is grouped by `CreatedAt`. Completion count and duration are grouped by `CompletedAt`, using UTC bounds converted from each business date with an inclusive start and exclusive end. Each work order counts once, regardless of its service lines. Only `Completed` or `Delivered` work orders with both timestamps and `CompletedAt >= StartedAt` contribute to the mean of `CompletedAt - StartedAt`. No eligible work orders means count zero and an absent mean; genuinely equal timestamps produce zero minutes. Diagnosis, approval wait, pickup wait and uptime require separate indicators. Integration failures and alert definitions are documented in the processing section below. The existing per-service average retains its own meaning.
 
 When API observability is enabled, its `GarageFlow.WorkOrders` meter publishes these database snapshots at startup and every five minutes over the existing OTLP path:
 
