@@ -145,6 +145,19 @@ O utilitário de contratos restringe os caminhos de entrada e saída a `RUNNER_T
 
 <a id="private-ingress-and-public-edge"></a>
 
+
+### Proteção das branches e homologação
+
+`main` representa produção e `develop` representa homologação. Configure proteção nas duas branches: PR obrigatório, CI aprovada no commit atualizado, conversas resolvidas, sem force push, exclusão ou bypass de administrador. O projeto permite zero aprovações humanas obrigatórias para viabilizar a manutenção individual; isso não dispensa PR nem CI. O check obrigatório deste repositório é **quality-gate**, vinculado ao GitHub Actions.
+
+O deploy de homologação exige a variável **de repositório** `HOMOLOGATION_DEPLOY_ENABLED=true`. Ausente ou `false`, a CI continua executando e os jobs de implantação são ignorados. Essa variável deve estar no repositório porque a condição do job é avaliada antes de carregar o Environment. Produção mantém o deploy automático após a qualidade do mesmo commit.
+
+Para ativar homologação, prepare o Environment `homologation`, restrinja-o à branch `develop`, configure os inputs descritos neste README e credenciais Academy válidas, e habilite a variável. Execute os projetos na ordem plataforma/ingress → banco → aplicação → serverless/edge. Depois de uma validação temporária, desabilite a variável nos quatro repositórios antes da remoção dos recursos. Isso evita recriação por novos pushes; não cancela uma execução já iniciada.
+
+Estados e contratos de homologação usam seus próprios prefixos. Não execute o workflow legado de destruição da Fase 2 para remover a Fase 3. O [procedimento de encerramento de homologação](https://github.com/DiegoRugue/garageflow-infra-kubernetes#encerramento-de-homologação) descreve as dependências e os recursos compartilhados que devem permanecer.
+
+O avaliador `soat-architecture` deve ter acesso de leitura a este repositório. Em repositórios privados, o responsável deve conferir a aceitação do convite antes da entrega; o convite pendente não garante acesso. O README e os artefatos versionados permitem a revisão mesmo quando a sessão temporária da Academy estiver encerrada.
+
 ## Entrada privada e borda pública
 
 Provisione nesta ordem: **platform → database e ingress → aplicação → serverless → edge**. O workflow da plataforma reconcilia ingress após a plataforma estar pronta. A pipeline serverless chama o workflow reutilizável de edge depois da implantação dos aliases, usando a branch protegida correspondente e as configurações herdadas do Environment. `Deploy Private Ingress or Edge` também aceita recuperações manuais de `ingress` ou `edge` nas branches protegidas; não possui gatilho próprio de push. Edge verifica se os aliases implantados usam os segredos atuais da plataforma, o endereço de ingress e a rede corretos, e se os destinos da aplicação estão saudáveis. A etapa de qualidade registra o commit exato da plataforma que a implantação utiliza. As chaves de estado Terraform são separadas: `phase3/{environment}/ingress.tfstate` e `phase3/{environment}/edge.tfstate`.
@@ -253,3 +266,18 @@ FROM Span SELECT count(*) WHERE service.name = 'garageflow-api' FACET deployment
 FROM Log SELECT count(*) WHERE service.name = 'garageflow-api' FACET deployment.environment.name SINCE 30 minutes ago
 FROM Metric SELECT average(node.memory.usage.percentage) * 100 WHERE k8s.cluster.name = 'garageflow-production' FACET k8s.node.name TIMESERIES
 ```
+
+## Encerramento de homologação
+
+Uma validação temporária deve comprovar criação, funcionamento e remoção de `homologation`. O resultado de uma implantação aprovada permanece no histórico do GitHub após a remoção, mas não significa que o ambiente continua disponível.
+
+1. Desabilite `HOMOLOGATION_DEPLOY_ENABLED` nos quatro repositórios e aguarde as execuções em andamento. Confirme a conta, região `us-east-1` e a saúde de produção antes da operação.
+2. Use somente os backends `phase3/homologation/{edge,serverless,database,ingress,platform}.tfstate` e contratos `contracts/v1/homologation/...` e `contracts/v2/homologation/ingress.json`. Cada root mantém seu próprio diretório de dados Terraform. Não use o root `bootstrap/state-backend`, estados de produção ou o provisionador monolítico da Fase 2.
+3. Gere e revise um plano salvo para cada etapa. Confira ambiente, nomes, tags, VPC e dependências; qualquer alteração em recursos de produção interrompe a operação. Aplique exatamente o plano revisado.
+4. Remova a borda pública antes das Lambdas para liberar o VPC Link. Pare os workloads da aplicação antes de remover o banco. No root database, aplique explicitamente `allow_database_destroy=true` apenas para homologação e escolha um `final_snapshot_identifier` único. O snapshot final é preservado; produção permanece com proteção de exclusão.
+5. Remova o banco, o ingress e, por último, a plataforma. Aguarde a liberação das interfaces de rede das Lambdas e do VPC Link antes de remover subnets e security groups. O ECR deste ambiente permite exclusão com imagens: confirme seu nome antes da operação.
+6. Preserve o bucket compartilhado de estados, suas versões, contratos históricos e as roles preexistentes da Academy. Registre o snapshot final e eventuais secrets em recuperação como recursos residuais. Confirme os estados sem recursos gerenciados e a ausência dos recursos ativos de homologação, e repita a verificação de produção.
+
+A infraestrutura é isolada por VPC, nomes e estados; quotas e orçamento da conta Academy continuam compartilhados. Verifique capacidade e saldo antes de manter dois ambientes simultaneamente. Os planos e registros da execução não devem ser commitados.
+
+A [coleção Postman da solução](https://github.com/DiegoRugue/GarageFlow/tree/main/docs/postman) reúne o catálogo público e uma jornada guiada de admin e cliente, com captura automática de tokens e identificadores.

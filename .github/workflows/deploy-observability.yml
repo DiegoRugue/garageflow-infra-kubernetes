@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/quality-gate.yml
   deploy:
     needs: quality-gate
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/develop' && vars.HOMOLOGATION_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
