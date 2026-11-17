@@ -8,6 +8,7 @@ Este README é a documentação principal da infraestrutura compartilhada, rede,
 - [Responsabilidade dos artefatos](#responsabilidade-dos-artefatos)
 - [Rede e escalabilidade](#rede-e-escalabilidade)
 - [Ordem de deploy e contratos](#ordem-de-deploy-e-contratos)
+- [Recursos da Fase 4](#recursos-da-fase-4)
 - [Acesso e documentação das APIs](#acesso-e-documentação-das-apis)
 - [Configuração](#configuração)
 - [Integração contínua e implantação](#integração-contínua-e-implantação)
@@ -62,6 +63,90 @@ EKS usa dois nós `t3.small` e papéis preexistentes. O [HPA da aplicação](htt
 Cada produtor grava revisão imutável antes do contrato estável no S3. Platform/database/serverless usam v1; ingress usa v2 para declarar `transport=http` explicitamente. Os consumidores validam versão, produtor, ambiente, conta e identidade dos recursos. Segredos e state não fazem parte desses manifests.
 
 Branches de deploy: `develop` → `homologation`, `main` → `production`. Estados, nomes, CIDRs e concorrência são separados por ambiente. Criar branches, Environments, secrets e proteção com PR/checks obrigatórios é parte da configuração inicial, não efeito do YAML. A configuração de homologação não deve ser confundida com uma execução já verificada.
+
+## Recursos da Fase 4
+
+O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state próprio em `phase4/{environment}/workloads.tfstate`. Ele prepara quatro filas SQS Standard com DLQ, a tabela DynamoDB exclusiva de Execução, os registries ECR dos workers e uma associação de EKS Pod Identity por ServiceAccount.
+
+| Fila | Publica | Consome |
+| --- | --- | --- |
+| `execution-commands` | API de OS | Execução |
+| `execution-results` | Execução | API de OS |
+| `billing-commands` | API de OS | Pagamentos |
+| `billing-results` | Pagamentos | API de OS |
+
+Os nomes dos recursos incluem o ambiente. Antes do apply, confirme que o cluster tem o agente de Pod Identity e que a sessão permite associar as três roles IAM existentes. Cada role precisa confiar em `pods.eks.amazonaws.com`. O output `workload_policies` fornece as permissões de dados por role, incluindo as filas e a tabela. A capacidade da AWS Academy de fornecer essas roles e a autorização de associação deve ser conferida na sessão final.
+
+Na janela de implantação, use o contrato v1 publicado pela plataforma no bucket do ambiente. O root obtém o nome do EKS pelo contrato e verifica conta, região, ambiente, VPC e security group no cluster antes de associar as roles. A sessão precisa de acesso de leitura ao contrato e ao EKS. Defina `WORKLOADS_VARS_FILE` com o caminho do arquivo de variáveis fora do checkout que contém `environment`, `aws_account_id` e `workload_role_arns`.
+
+```bash
+workloads_tmp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/garageflow-workloads.XXXXXX")"
+aws s3 cp "s3://${TF_STATE_BUCKET}/contracts/v1/${DEPLOY_ENVIRONMENT}/platform.json" \
+  "${workloads_tmp}/platform.json" --only-show-errors
+python scripts/infra_contract.py validate --file "${workloads_tmp}/platform.json" \
+  --producer platform --schema-version 1.0 --environment "${DEPLOY_ENVIRONMENT}"
+jq '{platform_contract: .}' "${workloads_tmp}/platform.json" >"${workloads_tmp}/platform.tfvars.json"
+terraform -chdir=infra/phase4-workloads init -reconfigure -input=false \
+  -backend-config="bucket=${TF_STATE_BUCKET}" \
+  -backend-config="key=phase4/${DEPLOY_ENVIRONMENT}/workloads.tfstate" \
+  -backend-config="region=us-east-1" -backend-config=encrypt=true -backend-config=use_lockfile=true
+terraform -chdir=infra/phase4-workloads plan -input=false \
+  -var-file="${WORKLOADS_VARS_FILE}" -var-file="${workloads_tmp}/platform.tfvars.json" \
+  -out="${workloads_tmp}/workloads.tfplan"
+```
+
+Revise o plano e, na janela de implantação, aplique o arquivo `workloads.tfplan`. Com o namespace `garageflow` existente e o contexto Kubernetes do ambiente selecionado, materialize os três ConfigMaps a partir do output.
+
+```bash
+terraform -chdir=infra/phase4-workloads output -json runtime_config |
+  jq '{apiVersion: "v1", kind: "List", items: [to_entries[] |
+    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: .key, namespace: "garageflow"}, data: .value}]}' |
+  kubectl apply --server-side --field-manager=garageflow-phase4 -f -
+```
+
+O output `ecr_repository_names` fornece o input `ECR_REPOSITORY` de cada worker. Os repositórios e o DynamoDB não contêm dados de outros serviços. O RDS e os segredos de Pagamentos são preparados separadamente.
+
+No momento da entrega, o Environment da plataforma usa `PHASE4_SAGA_ENABLED=true` para que o workflow de ingress acrescente o target de Pagamentos no NodePort `30081` e o workflow de edge publique as rotas adicionais. O ALB interno encaminha somente `POST /webhooks/mercado-pago/orders` para Pagamentos. O health check do target permanece no trecho privado. O trecho público usa o HTTPS do Gateway e o trecho ALB → pod usa HTTP privado. A sequência completa fica na [API de Ordens de Serviço](https://github.com/DiegoRugue/GarageFlow#preparação-do-deploy-da-fase-4).
+
+### Topologia e fronteiras da Fase 4
+
+![Topologia da Fase 4 com edge, ALB interno, workloads, filas e bancos](docs/diagrams/phase4-network.png)
+
+[Fonte editável da topologia](docs/diagrams/phase4-network.mmd)
+
+| Trecho | Implementação e restrição |
+| --- | --- |
+| Cliente e oficina → Gateway → API de OS | Rotas explícitas, JWT nas rotas de negócio, VPC Link e ALB privado. A API de OS recebe tráfego no NodePort `30080`. |
+| Mercado Pago → Gateway → Pagamentos | Rota pública HTTPS para `POST /webhooks/mercado-pago/orders`. O ALB interno encaminha esse método e caminho para o NodePort `30081`, acessível pelo security group do ALB. Pagamentos valida a assinatura. |
+| Execução ↔ SQS e DynamoDB | Worker sem rota pública. A identidade do pod lê os comandos, publica resultados e opera na tabela de Execução. |
+| Pagamentos ↔ Mercado Pago | Saída HTTPS para criar e consultar orders. O health check do target fica na rede privada. |
+| API de OS e Pagamentos → RDS | Cada serviço usa seu próprio banco lógico e usuário. A configuração de conexão fica no Secret do workload. |
+
+### Integração e rollout
+
+Os ConfigMaps do output `runtime_config` compartilham apenas nomes e URLs dos recursos do ambiente. Cada par produtor–consumidor recebe a mesma URL. As filas e as DLQs são dedicadas a cada fluxo. A infraestrutura usa long polling de 20 segundos, visibilidade de 90 segundos, cinco recebimentos antes do redrive e retenção de 14 dias nas DLQs.
+
+| Unidade | Propriedade |
+| --- | --- |
+| `phase4-workloads` | Filas, DLQs, DynamoDB, ECR dos workers, associações Pod Identity e metadados de runtime. |
+| `ingress` | Target privado de Pagamentos, regra exata do webhook e regras de rede para o NodePort. |
+| `edge` | Rotas da Saga com JWT e callback cuja autenticação é a assinatura do Mercado Pago. |
+| Repositórios dos serviços | Imagens, Deployments, ServiceAccounts e workflows de rollout. |
+| Banco gerenciado | Instância RDS, acesso privado e configuração de banco. Pagamentos cria suas tabelas ao iniciar com seu usuário. |
+
+O caminho de liberação é plataforma e RDS → recursos da Fase 4 e configuração → Execução e Pagamentos → migration e rollout da API de OS → ingress e edge. Ative o webhook após a confirmação do target de Pagamentos. O primeiro rollout usa a janela final da entrega. A [preparação do deploy da API](https://github.com/DiegoRugue/GarageFlow#preparação-do-deploy-da-fase-4) detalha a ordem e os parâmetros.
+
+### Verificação sem provisionar recursos
+
+```bash
+for root in phase4-workloads ingress edge; do
+  terraform -chdir="infra/${root}" init -backend=false -input=false
+  terraform -chdir="infra/${root}" validate
+  terraform -chdir="infra/${root}" test
+done
+```
+
+Os [testes de workloads](infra/phase4-workloads/tests/workloads.tftest.hcl) conferem a correspondência das quatro URLs, os redrives, a tabela e as identidades. Os testes de [ingress](infra/ingress/tests/ingress.tftest.hcl) e [edge](infra/edge/tests/edge.tftest.hcl) exercitam a rota específica de Pagamentos e a autorização das rotas de negócio. A homologação comprova o acesso das roles, a conectividade do cluster e o webhook real de teste.
 
 ## Acesso e documentação das APIs
 
@@ -129,7 +214,7 @@ O utilitário compartilhado `scripts/infra_contract.py`, seus testes e o schema 
 
 `quality-gate.yml` executa testes Python de contratos e políticas do repositório, formatação Terraform, inicialização sem backend, validação, testes com providers simulados e verificação de sintaxe shell em pull requests e pushes para `develop` ou `main`.
 
-`deploy.yml` repete as verificações para o commit confiável exato e só então implanta um push ou uma recuperação manual cuja referência seja exatamente `develop` ou `main`. Configure GitHub Environments correspondentes, chamados `homologation` e `production`, com estes valores:
+`deploy.yml` repete as verificações para o commit a implantar. Acione o workflow manualmente em `develop` para homologação ou em `main` para produção. Os GitHub Environments `homologation` e `production` usam a configuração abaixo.
 
 - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `TF_STATE_BUCKET`, `EKS_CLUSTER_ROLE_ARN`, `EKS_NODE_ROLE_ARN`.
 - Variáveis: `TF_OWNER`, `TF_EXPIRES_ON`, `BOOTSTRAP_ADMIN_EMAIL`, `SNS_NOTIFICATION_EMAIL`, `EKS_PUBLIC_ACCESS_CIDRS` como um array JSON de strings e, opcionalmente, `EKS_VERSION`.
@@ -150,7 +235,7 @@ O utilitário de contratos restringe os caminhos de entrada e saída a `RUNNER_T
 
 `main` representa produção e `develop` representa homologação. Configure proteção nas duas branches: PR obrigatório, CI aprovada no commit atualizado, conversas resolvidas, sem force push, exclusão ou bypass de administrador. O projeto permite zero aprovações humanas obrigatórias para viabilizar a manutenção individual; isso não dispensa PR nem CI. O check obrigatório deste repositório é **quality-gate**, vinculado ao GitHub Actions.
 
-O deploy de homologação exige a variável **de repositório** `HOMOLOGATION_DEPLOY_ENABLED=true`. Ausente ou `false`, a CI continua executando e os jobs de implantação são ignorados. Essa variável deve estar no repositório porque a condição do job é avaliada antes de carregar o Environment. Produção mantém o deploy automático após a qualidade do mesmo commit.
+O deploy de homologação exige acionamento manual em `develop` e a variável **de repositório** `HOMOLOGATION_DEPLOY_ENABLED=true`. A condição do job consulta a variável antes de carregar o Environment. Pushes em `develop` executam o Quality Gate.
 
 Para ativar homologação, prepare o Environment `homologation`, restrinja-o à branch `develop`, configure os inputs descritos neste README e credenciais Academy válidas, e habilite a variável. Execute os projetos na ordem plataforma/ingress → banco → aplicação → serverless/edge. Depois de uma validação temporária, desabilite a variável nos quatro repositórios antes da remoção dos recursos. Isso evita recriação por novos pushes; não cancela uma execução já iniciada.
 

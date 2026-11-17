@@ -1,4 +1,7 @@
 mock_provider "aws" {
+  mock_resource "aws_lb_listener" {
+    defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/garageflow/1234567890123456/1234567890123456" }
+  }
   mock_resource "aws_lb" { defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/garageflow/1234567890123456" } }
   mock_resource "aws_lb_target_group" { defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/garageflow/1234567890123456" } }
   mock_data "aws_caller_identity" { defaults = { account_id = "123456789012" } }
@@ -76,4 +79,29 @@ run "reject_wrong_vpc" {
     values = { vpc_id = "vpc-99999999999999999" }
   }
   expect_failures = [terraform_data.contract_identity]
+}
+
+run "phase4_routes_only_the_billing_webhook_to_its_target" {
+  command = apply
+  variables { phase4_enabled = true }
+
+  assert {
+    condition = (
+      aws_lb_target_group.billing[0].port == 30081
+      && aws_lb_target_group.billing[0].health_check[0].path == "/health/live"
+      && aws_vpc_security_group_ingress_rule.billing_nodeport[0].referenced_security_group_id == aws_security_group.alb.id
+      && aws_vpc_security_group_egress_rule.alb_billing_nodes[0].to_port == 30081
+      && keys(aws_autoscaling_attachment.billing_workers) == ["garageflow-workers"]
+    )
+    error_message = "The private ALB must be the only ingress to the Billing NodePort."
+  }
+
+  assert {
+    condition = (
+      one(flatten([for condition in aws_lb_listener_rule.billing_webhook[0].condition : [for path in condition.path_pattern : tolist(path.values)]])) == "/webhooks/mercado-pago/orders"
+      && one(flatten([for condition in aws_lb_listener_rule.billing_webhook[0].condition : [for method in condition.http_request_method : tolist(method.values)]])) == "POST"
+      && aws_lb_listener.api.default_action[0].target_group_arn == aws_lb_target_group.api.arn
+    )
+    error_message = "The listener must route only POST for the Billing webhook and preserve the OS API default."
+  }
 }
