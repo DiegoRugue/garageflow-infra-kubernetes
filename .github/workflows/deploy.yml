@@ -1,9 +1,6 @@
 name: Deploy Platform
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -54,7 +51,7 @@ jobs:
           terraform -chdir=infra/platform init -backend=false -input=false
           terraform -chdir=infra/platform validate
           terraform -chdir=infra/platform test
-          for root in ingress edge; do
+          for root in ingress edge phase4-workloads; do
             terraform -chdir="infra/${root}" init -backend=false -input=false
             terraform -chdir="infra/${root}" validate
             terraform -chdir="infra/${root}" test

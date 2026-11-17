@@ -205,7 +205,7 @@ O utilitário compartilhado `scripts/infra_contract.py`, seus testes e o schema 
 
 `quality-gate.yml` executa testes Python de contratos e políticas do repositório, formatação Terraform, inicialização sem backend, validação, testes com providers simulados e verificação de sintaxe shell em pull requests e pushes para `develop` ou `main`.
 
-`deploy.yml` repete as verificações para o commit a implantar. Em `develop`, execute o workflow manualmente. Em `main`, o deploy roda após push ou por acionamento manual. Os GitHub Environments `homologation` e `production` usam a configuração abaixo.
+`deploy.yml` repete as verificações para o commit a implantar. Acione o workflow manualmente em `develop` para homologação ou em `main` para produção. Os GitHub Environments `homologation` e `production` usam a configuração abaixo.
 
 - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `TF_STATE_BUCKET`, `EKS_CLUSTER_ROLE_ARN`, `EKS_NODE_ROLE_ARN`.
 - Variáveis: `TF_OWNER`, `TF_EXPIRES_ON`, `BOOTSTRAP_ADMIN_EMAIL`, `SNS_NOTIFICATION_EMAIL`, `EKS_PUBLIC_ACCESS_CIDRS` como um array JSON de strings e, opcionalmente, `EKS_VERSION`.
