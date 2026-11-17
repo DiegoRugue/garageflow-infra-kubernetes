@@ -56,10 +56,11 @@ variable "workload_role_arns" {
     execution = string
     billing   = string
   })
-  description = "Existing IAM roles that trust pods.eks.amazonaws.com and are dedicated to these workloads."
+  description = "Optional existing Pod Identity roles. Omit this input when the workloads use AWS Academy session credentials."
+  default     = null
 
   validation {
-    condition = length(toset(values(var.workload_role_arns))) == 3 && alltrue([
+    condition = var.workload_role_arns == null ? true : length(toset(values(var.workload_role_arns))) == 3 && alltrue([
       for role in values(var.workload_role_arns) :
       can(regex("^arn:aws:iam::${var.aws_account_id}:role/[^[:space:]]+$", role))
     ])

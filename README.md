@@ -66,7 +66,7 @@ Branches de deploy: `develop` → `homologation`, `main` → `production`. Estad
 
 ## Recursos da Fase 4
 
-O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state próprio em `phase4/{environment}/workloads.tfstate`. Ele prepara quatro filas SQS Standard com DLQ, a tabela DynamoDB exclusiva de Execução, os registries ECR dos workers e uma associação de EKS Pod Identity por ServiceAccount.
+O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state próprio em `phase4/{environment}/workloads.tfstate`. Ele prepara quatro filas SQS Standard com DLQ, a tabela DynamoDB exclusiva de Execução e os repositórios ECR dos workers.
 
 | Fila | Publica | Consome |
 | --- | --- | --- |
@@ -75,9 +75,11 @@ O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state p
 | `billing-commands` | API de OS | Pagamentos |
 | `billing-results` | Pagamentos | API de OS |
 
-Os nomes dos recursos incluem o ambiente. Antes do apply, confirme que o cluster tem o agente de Pod Identity e que a sessão permite associar as três roles IAM existentes. Cada role precisa confiar em `pods.eks.amazonaws.com`. O output `workload_policies` fornece as permissões de dados por role, incluindo as filas e a tabela. A capacidade da AWS Academy de fornecer essas roles e a autorização de associação deve ser conferida na sessão final.
+Na AWS Academy, a API e os workers usam a sessão temporária do ambiente por meio de Secrets do Kubernetes. Omitir `workload_role_arns` provisiona filas, tabela e ECR sem criar associações IAM. Aplique os ConfigMaps e execute os deploys com as credenciais da janela ativa.
 
-Na janela de implantação, use o contrato v1 publicado pela plataforma no bucket do ambiente. O root obtém o nome do EKS pelo contrato e verifica conta, região, ambiente, VPC e security group no cluster antes de associar as roles. A sessão precisa de acesso de leitura ao contrato e ao EKS. Defina `WORKLOADS_VARS_FILE` com o caminho do arquivo de variáveis fora do checkout que contém `environment`, `aws_account_id` e `workload_role_arns`.
+Em um ambiente com roles dedicadas, o input opcional `workload_role_arns` associa uma role preexistente a cada ServiceAccount. Esse caminho requer o agente de Pod Identity, trust em `pods.eks.amazonaws.com` e autorização para associar as roles. O output `workload_policies` informa as permissões sobre as filas e a tabela. O deployment que usar Pod Identity deve carregar as credenciais do agente pela cadeia do SDK.
+
+Na janela de implantação, use o contrato v1 publicado pela plataforma no bucket do ambiente. O root valida a conta, a região, o ambiente, a VPC e o security group do EKS com esse contrato. Defina `WORKLOADS_VARS_FILE` com o caminho do arquivo de variáveis fora do checkout que contém `environment` e `aws_account_id`.
 
 ```bash
 workloads_tmp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/garageflow-workloads.XXXXXX")"
@@ -224,7 +226,7 @@ A implantação consulta STS para conferir a conta, verifica o suporte da versã
 
 Após essa pré-validação, o script inicializa o backend específico do ambiente, aplica o plano salvo em `RUNNER_TEMP`, espera o cluster ficar ativo e consulta o Kubernetes, com tempo limite por requisição, até que dois nós estejam Ready. Falhas transitórias da API Kubernetes são repetidas até o prazo global; falhas persistentes impedem a publicação do contrato e registram o último resultado. Somente após essa verificação o contrato é validado e sua revisão imutável é publicada antes da chave estável.
 
-As credenciais e os recursos da AWS Academy são temporários, com sessão de aproximadamente quatro horas. Prepare e aprove as verificações locais antes de iniciar a sessão, renove as credenciais temporárias de cada Environment e reserve tempo para provisionar e verificar o EKS. Provisionamento real, migração do estado da Fase 2, proteção dos repositórios e publicação remota são operações coordenadas separadamente; a validação local não as executa.
+As credenciais da AWS Academy são temporárias, com uma janela de aproximadamente quatro horas. Prepare as verificações locais antes da sessão. Depois de renovar as credenciais, confirme a conta com STS, confira o state Terraform e verifique o estado dos nós. O cronômetro da sessão pode pausar as instâncias EC2, e recursos como o RDS podem permanecer ativos e consumir orçamento.
 
 O utilitário de contratos restringe os caminhos de entrada e saída a `RUNNER_TEMP` ou, quando ausente, ao diretório temporário do sistema operacional. Caminhos relativos são resolvidos dentro desse diretório; caminhos absolutos e links simbólicos resolvidos também devem permanecer nele. As dependências de teste, inclusive transitivas, têm versões e hashes fixados em `requirements-test.txt`.
 
