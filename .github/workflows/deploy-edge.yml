@@ -46,6 +46,7 @@ jobs:
       DEPLOY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'homologation' }}
       TF_VAR_owner: ${{ vars.TF_OWNER }}
       TF_VAR_expires_on: ${{ vars.TF_EXPIRES_ON }}
+      TF_VAR_phase4_enabled: ${{ vars.PHASE4_SAGA_ENABLED || 'false' }}
       DEPLOY_COMPONENT: ${{ inputs.component || 'edge' }}
     steps:
       - uses: actions/checkout@v5

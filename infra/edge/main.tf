@@ -2,7 +2,10 @@ locals {
   platform   = var.platform_contract.outputs
   ingress    = var.ingress_contract.outputs
   serverless = var.serverless_contract.outputs
-  routes     = jsondecode(file("${path.module}/routes.json"))
+  routes = merge(
+    jsondecode(file("${path.module}/routes.json")),
+    var.phase4_enabled ? jsondecode(file("${path.module}/phase4-routes.json")) : {}
+  )
   tags = {
     Project   = "GarageFlow", Environment = var.environment, Owner = var.owner
     ExpiresOn = var.expires_on, ManagedBy = "Terraform", Component = "edge"

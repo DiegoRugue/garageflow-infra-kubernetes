@@ -1,10 +1,6 @@
 name: Deploy Platform
 
 on:
-  push:
-    branches:
-      - main
-      - develop
   workflow_dispatch:
 
 permissions:
@@ -55,12 +51,13 @@ jobs:
           terraform -chdir=infra/platform init -backend=false -input=false
           terraform -chdir=infra/platform validate
           terraform -chdir=infra/platform test
-          for root in ingress edge; do
+          for root in ingress edge phase4-workloads; do
             terraform -chdir="infra/${root}" init -backend=false -input=false
             terraform -chdir="infra/${root}" validate
             terraform -chdir="infra/${root}" test
           done
-          bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
+          bash -n scripts/deploy-platform.sh
+          bash -n scripts/lib/deploy-platform-functions.sh
 
   deploy:
     if: github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/develop' && vars.HOMOLOGATION_DEPLOY_ENABLED == 'true')
