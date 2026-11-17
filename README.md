@@ -77,16 +77,25 @@ O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state p
 
 Os nomes dos recursos incluem o ambiente. Antes do apply, confirme que o cluster tem o agente de Pod Identity e que a sessão permite associar as três roles IAM existentes. Cada role precisa confiar em `pods.eks.amazonaws.com`. O output `workload_policies` fornece as permissões de dados por role, incluindo as filas e a tabela. A capacidade da AWS Academy de fornecer essas roles e a autorização de associação deve ser conferida na sessão final.
 
-Na janela de implantação, inicialize com o bucket do ambiente e as mesmas opções de criptografia e lock usadas pelos demais roots. Passe `environment`, `aws_account_id`, `cluster_name` e `workload_role_arns` no arquivo de variáveis fora do checkout. Revise o plano antes de aplicar.
+Na janela de implantação, use o contrato v1 publicado pela plataforma no bucket do ambiente. O root obtém o nome do EKS pelo contrato e verifica conta, região, ambiente, VPC e security group no cluster antes de associar as roles. A sessão precisa de acesso de leitura ao contrato e ao EKS. Defina `WORKLOADS_VARS_FILE` com o caminho do arquivo de variáveis fora do checkout que contém `environment`, `aws_account_id` e `workload_role_arns`.
 
 ```bash
+workloads_tmp="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/garageflow-workloads.XXXXXX")"
+aws s3 cp "s3://${TF_STATE_BUCKET}/contracts/v1/${DEPLOY_ENVIRONMENT}/platform.json" \
+  "${workloads_tmp}/platform.json" --only-show-errors
+python scripts/infra_contract.py validate --file "${workloads_tmp}/platform.json" \
+  --producer platform --schema-version 1.0 --environment "${DEPLOY_ENVIRONMENT}"
+jq '{platform_contract: .}' "${workloads_tmp}/platform.json" >"${workloads_tmp}/platform.tfvars.json"
 terraform -chdir=infra/phase4-workloads init -reconfigure -input=false \
   -backend-config="bucket=${TF_STATE_BUCKET}" \
   -backend-config="key=phase4/${DEPLOY_ENVIRONMENT}/workloads.tfstate" \
   -backend-config="region=us-east-1" -backend-config=encrypt=true -backend-config=use_lockfile=true
+terraform -chdir=infra/phase4-workloads plan -input=false \
+  -var-file="${WORKLOADS_VARS_FILE}" -var-file="${workloads_tmp}/platform.tfvars.json" \
+  -out="${workloads_tmp}/workloads.tfplan"
 ```
 
-Com o namespace `garageflow` existente e o contexto Kubernetes do ambiente selecionado, materialize os três ConfigMaps a partir do output.
+Revise o plano e, na janela de implantação, aplique o arquivo `workloads.tfplan`. Com o namespace `garageflow` existente e o contexto Kubernetes do ambiente selecionado, materialize os três ConfigMaps a partir do output.
 
 ```bash
 terraform -chdir=infra/phase4-workloads output -json runtime_config |

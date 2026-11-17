@@ -1,6 +1,7 @@
 locals {
-  prefix = "garageflow-${var.environment}"
-  flows  = toset(["execution-commands", "execution-results", "billing-commands", "billing-results"])
+  platform = var.platform_contract.outputs
+  prefix   = "garageflow-${var.environment}"
+  flows    = toset(["execution-commands", "execution-results", "billing-commands", "billing-results"])
   services = {
     api = {
       reads  = ["execution-results", "billing-results"]
@@ -13,6 +14,22 @@ locals {
     billing = {
       reads  = ["billing-commands"]
       writes = ["billing-results"]
+    }
+  }
+}
+
+data "aws_eks_cluster" "platform" { name = local.platform.clusterName }
+
+resource "terraform_data" "platform_identity" {
+  lifecycle {
+    precondition {
+      condition = (
+        data.aws_eks_cluster.platform.arn == "arn:aws:eks:${var.aws_region}:${var.aws_account_id}:cluster/${local.platform.clusterName}" &&
+        lookup(data.aws_eks_cluster.platform.tags, "Environment", "") == var.environment &&
+        data.aws_eks_cluster.platform.vpc_config[0].vpc_id == local.platform.vpcId &&
+        data.aws_eks_cluster.platform.vpc_config[0].cluster_security_group_id == local.platform.clusterSecurityGroupId
+      )
+      error_message = "The live EKS cluster must match the platform contract and the selected environment."
     }
   }
 }
@@ -70,8 +87,9 @@ module "ecr" {
 resource "aws_eks_pod_identity_association" "workload" {
   for_each = local.services
 
-  cluster_name    = var.cluster_name
+  cluster_name    = local.platform.clusterName
   namespace       = "garageflow"
   service_account = "garageflow-${each.key}"
   role_arn        = var.workload_role_arns[each.key]
+  depends_on      = [terraform_data.platform_identity]
 }

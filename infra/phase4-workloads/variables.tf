@@ -24,9 +24,30 @@ variable "aws_account_id" {
   }
 }
 
-variable "cluster_name" {
-  type        = string
-  description = "EKS cluster name from the platform contract for this environment."
+variable "platform_contract" {
+  description = "Platform v1 metadata published for this environment."
+  type = object({
+    schemaVersion = string
+    producer      = string
+    environment   = string
+    outputs = object({
+      awsRegion              = string
+      clusterName            = string
+      vpcId                  = string
+      clusterSecurityGroupId = string
+      apiGatewayExecutionArn = string
+    })
+  })
+
+  validation {
+    condition = (
+      var.platform_contract.schemaVersion == "1.0" && var.platform_contract.producer == "platform" &&
+      var.platform_contract.environment == var.environment && var.platform_contract.outputs.awsRegion == var.aws_region &&
+      var.platform_contract.outputs.clusterName == "garageflow-${var.environment}" &&
+      startswith(var.platform_contract.outputs.apiGatewayExecutionArn, "arn:aws:execute-api:${var.aws_region}:${var.aws_account_id}:")
+    )
+    error_message = "Provide the v1 platform contract for the workload environment, region, AWS account, and EKS cluster."
+  }
 }
 
 variable "workload_role_arns" {
