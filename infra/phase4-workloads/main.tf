@@ -85,11 +85,11 @@ module "ecr" {
 }
 
 resource "aws_eks_pod_identity_association" "workload" {
-  for_each = local.services
+  for_each = var.workload_role_arns == null ? tomap({}) : tomap(var.workload_role_arns)
 
   cluster_name    = local.platform.clusterName
   namespace       = "garageflow"
   service_account = "garageflow-${each.key}"
-  role_arn        = var.workload_role_arns[each.key]
+  role_arn        = each.value
   depends_on      = [terraform_data.platform_identity]
 }
