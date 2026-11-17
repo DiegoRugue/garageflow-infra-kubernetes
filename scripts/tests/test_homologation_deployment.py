@@ -9,6 +9,13 @@ WORKFLOWS = ['deploy.yml', 'deploy-edge.yml', 'deploy-observability.yml']
 
 
 class HomologationDeploymentTests(unittest.TestCase):
+    def test_platform_homologation_deploy_requires_manual_dispatch(self):
+        document = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+        triggers = re.search(r"(?ms)^on:\n(.*?)(?=^\w)", document)[1]
+        push = re.search(r"(?ms)^  push:\n(.*?)(?=^  \w)", triggers)[1]
+        self.assertNotRegex(push, r"\bdevelop\b")
+        self.assertRegex(triggers, r"(?m)^  workflow_dispatch:")
+
     def test_aws_deploy_requires_protected_branch_and_explicit_homologation_opt_in(self):
         for workflow in WORKFLOWS:
             document = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")

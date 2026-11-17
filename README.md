@@ -205,7 +205,7 @@ O utilitário compartilhado `scripts/infra_contract.py`, seus testes e o schema 
 
 `quality-gate.yml` executa testes Python de contratos e políticas do repositório, formatação Terraform, inicialização sem backend, validação, testes com providers simulados e verificação de sintaxe shell em pull requests e pushes para `develop` ou `main`.
 
-`deploy.yml` repete as verificações para o commit confiável exato e só então implanta um push ou uma recuperação manual cuja referência seja exatamente `develop` ou `main`. Configure GitHub Environments correspondentes, chamados `homologation` e `production`, com estes valores:
+`deploy.yml` repete as verificações para o commit a implantar. Em `develop`, execute o workflow manualmente. Em `main`, o deploy roda após push ou por acionamento manual. Os GitHub Environments `homologation` e `production` usam a configuração abaixo.
 
 - Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `TF_STATE_BUCKET`, `EKS_CLUSTER_ROLE_ARN`, `EKS_NODE_ROLE_ARN`.
 - Variáveis: `TF_OWNER`, `TF_EXPIRES_ON`, `BOOTSTRAP_ADMIN_EMAIL`, `SNS_NOTIFICATION_EMAIL`, `EKS_PUBLIC_ACCESS_CIDRS` como um array JSON de strings e, opcionalmente, `EKS_VERSION`.
@@ -226,7 +226,7 @@ O utilitário de contratos restringe os caminhos de entrada e saída a `RUNNER_T
 
 `main` representa produção e `develop` representa homologação. Configure proteção nas duas branches: PR obrigatório, CI aprovada no commit atualizado, conversas resolvidas, sem force push, exclusão ou bypass de administrador. O projeto permite zero aprovações humanas obrigatórias para viabilizar a manutenção individual; isso não dispensa PR nem CI. O check obrigatório deste repositório é **quality-gate**, vinculado ao GitHub Actions.
 
-O deploy de homologação exige a variável **de repositório** `HOMOLOGATION_DEPLOY_ENABLED=true`. Ausente ou `false`, a CI continua executando e os jobs de implantação são ignorados. Essa variável deve estar no repositório porque a condição do job é avaliada antes de carregar o Environment. Produção mantém o deploy automático após a qualidade do mesmo commit.
+O deploy de homologação exige acionamento manual em `develop` e a variável **de repositório** `HOMOLOGATION_DEPLOY_ENABLED=true`. A condição do job consulta a variável antes de carregar o Environment. Pushes em `develop` executam o Quality Gate.
 
 Para ativar homologação, prepare o Environment `homologation`, restrinja-o à branch `develop`, configure os inputs descritos neste README e credenciais Academy válidas, e habilite a variável. Execute os projetos na ordem plataforma/ingress → banco → aplicação → serverless/edge. Depois de uma validação temporária, desabilite a variável nos quatro repositórios antes da remoção dos recursos. Isso evita recriação por novos pushes; não cancela uma execução já iniciada.
 
