@@ -26,11 +26,6 @@ variables {
       apiGatewayExecutionArn = "arn:aws:execute-api:us-east-1:123456789012:a1b2c3d4e5"
     }
   }
-  workload_role_arns = {
-    api       = "arn:aws:iam::123456789012:role/garageflow-api"
-    execution = "arn:aws:iam::123456789012:role/garageflow-execution"
-    billing   = "arn:aws:iam::123456789012:role/garageflow-billing"
-  }
 }
 
 run "wire_saga_workloads" {
@@ -72,6 +67,23 @@ run "wire_saga_workloads" {
       && length(output.ecr_repository_names) == 2
     )
     error_message = "Execution must have its own table and both workers must have their own image registry."
+  }
+
+  assert {
+    condition     = length(aws_eks_pod_identity_association.workload) == 0
+    error_message = "The AWS Academy deployment must provision the workload resources without Pod Identity."
+  }
+}
+
+run "wire_optional_pod_identity_roles" {
+  command = apply
+
+  variables {
+    workload_role_arns = {
+      api       = "arn:aws:iam::123456789012:role/garageflow-api"
+      execution = "arn:aws:iam::123456789012:role/garageflow-execution"
+      billing   = "arn:aws:iam::123456789012:role/garageflow-billing"
+    }
   }
 
   assert {
