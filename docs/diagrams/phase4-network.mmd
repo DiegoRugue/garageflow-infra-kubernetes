@@ -1,0 +1,18 @@
+flowchart TD
+    Users["Cliente e oficina"] -->|"JWT"| Gateway["API Gateway HTTP API"]
+    Provider["Mercado Pago"] -->|"Webhook HTTPS assinado"| Gateway
+    Gateway -->|"VPC Link"| ALB["ALB interno"]
+    ALB -->|"30080 · API de OS"| OS["API de OS no EKS"]
+    ALB -->|"30081 · POST webhook"| Billing["Pagamentos no EKS"]
+    OS <--> SQS["4 filas SQS Standard + DLQs"]
+    Billing <--> SQS
+    SQS <-->|"2 filas de Execução"| Execution["Execução no EKS"]
+    OS --> RDS[("PostgreSQL · bancos distintos")]
+    Billing --> RDS
+    Execution --> Dynamo[("DynamoDB exclusivo")]
+    Billing -->|"HTTPS Orders API"| Provider
+
+    classDef workload fill:#e7eff9,stroke:#295882,color:#102840
+    classDef data fill:#e5f4ed,stroke:#2d7756,color:#153d2c
+    class OS,Execution,Billing workload
+    class SQS,RDS,Dynamo data

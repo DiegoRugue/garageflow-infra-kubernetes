@@ -8,6 +8,7 @@ Este README é a documentação principal da infraestrutura compartilhada, rede,
 - [Responsabilidade dos artefatos](#responsabilidade-dos-artefatos)
 - [Rede e escalabilidade](#rede-e-escalabilidade)
 - [Ordem de deploy e contratos](#ordem-de-deploy-e-contratos)
+- [Recursos da Fase 4](#recursos-da-fase-4)
 - [Acesso e documentação das APIs](#acesso-e-documentação-das-apis)
 - [Configuração](#configuração)
 - [Integração contínua e implantação](#integração-contínua-e-implantação)
@@ -97,6 +98,46 @@ terraform -chdir=infra/phase4-workloads output -json runtime_config |
 O output `ecr_repository_names` fornece o input `ECR_REPOSITORY` de cada worker. Os repositórios e o DynamoDB não contêm dados de outros serviços. O RDS e os segredos de Pagamentos são preparados separadamente.
 
 No momento da entrega, o Environment da plataforma usa `PHASE4_SAGA_ENABLED=true` para que o workflow de ingress acrescente o target de Pagamentos no NodePort `30081` e o workflow de edge publique as rotas adicionais. O ALB interno encaminha somente `POST /webhooks/mercado-pago/orders` para Pagamentos. O health check do target permanece no trecho privado. O trecho público usa o HTTPS do Gateway e o trecho ALB → pod usa HTTP privado. A sequência completa fica na [API de Ordens de Serviço](https://github.com/DiegoRugue/GarageFlow#preparação-do-deploy-da-fase-4).
+
+### Topologia e fronteiras da Fase 4
+
+![Topologia da Fase 4 com edge, ALB interno, workloads, filas e bancos](docs/diagrams/phase4-network.png)
+
+[Fonte editável da topologia](docs/diagrams/phase4-network.mmd)
+
+| Trecho | Implementação e restrição |
+| --- | --- |
+| Cliente e oficina → Gateway → API de OS | Rotas explícitas, JWT nas rotas de negócio, VPC Link e ALB privado. A API de OS recebe tráfego no NodePort `30080`. |
+| Mercado Pago → Gateway → Pagamentos | Rota pública HTTPS para `POST /webhooks/mercado-pago/orders`. O ALB interno encaminha esse método e caminho para o NodePort `30081`, acessível pelo security group do ALB. Pagamentos valida a assinatura. |
+| Execução ↔ SQS e DynamoDB | Worker sem rota pública. A identidade do pod lê os comandos, publica resultados e opera na tabela de Execução. |
+| Pagamentos ↔ Mercado Pago | Saída HTTPS para criar e consultar orders. O health check do target fica na rede privada. |
+| API de OS e Pagamentos → RDS | Cada serviço usa seu próprio banco lógico e usuário. A configuração de conexão fica no Secret do workload. |
+
+### Integração e rollout
+
+Os ConfigMaps do output `runtime_config` compartilham apenas nomes e URLs dos recursos do ambiente. Cada par produtor–consumidor recebe a mesma URL. As filas e as DLQs são dedicadas a cada fluxo. A infraestrutura usa long polling de 20 segundos, visibilidade de 90 segundos, cinco recebimentos antes do redrive e retenção de 14 dias nas DLQs.
+
+| Unidade | Propriedade |
+| --- | --- |
+| `phase4-workloads` | Filas, DLQs, DynamoDB, ECR dos workers, associações Pod Identity e metadados de runtime. |
+| `ingress` | Target privado de Pagamentos, regra exata do webhook e regras de rede para o NodePort. |
+| `edge` | Rotas da Saga com JWT e callback cuja autenticação é a assinatura do Mercado Pago. |
+| Repositórios dos serviços | Imagens, Deployments, ServiceAccounts e workflows de rollout. |
+| Banco gerenciado | Instância RDS, acesso privado e configuração de banco. Pagamentos cria suas tabelas ao iniciar com seu usuário. |
+
+O caminho de liberação é plataforma e RDS → recursos da Fase 4 e configuração → Execução e Pagamentos → migration e rollout da API de OS → ingress e edge. Ative o webhook após a confirmação do target de Pagamentos. O primeiro rollout usa a janela final da entrega. A [preparação do deploy da API](https://github.com/DiegoRugue/GarageFlow#preparação-do-deploy-da-fase-4) detalha a ordem e os parâmetros.
+
+### Verificação sem provisionar recursos
+
+```bash
+for root in phase4-workloads ingress edge; do
+  terraform -chdir="infra/${root}" init -backend=false -input=false
+  terraform -chdir="infra/${root}" validate
+  terraform -chdir="infra/${root}" test
+done
+```
+
+Os [testes de workloads](infra/phase4-workloads/tests/workloads.tftest.hcl) conferem a correspondência das quatro URLs, os redrives, a tabela e as identidades. Os testes de [ingress](infra/ingress/tests/ingress.tftest.hcl) e [edge](infra/edge/tests/edge.tftest.hcl) exercitam a rota específica de Pagamentos e a autorização das rotas de negócio. A homologação comprova o acesso das roles, a conectividade do cluster e o webhook real de teste.
 
 ## Acesso e documentação das APIs
 
