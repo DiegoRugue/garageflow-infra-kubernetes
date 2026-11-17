@@ -74,4 +74,8 @@ jobs:
           done
 
       - name: Validate deployment script syntax
-        run: bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh scripts/deploy-ingress.sh scripts/deploy-edge.sh scripts/deploy-edge-component.sh
+        shell: bash
+        run: |
+          for script in scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh scripts/deploy-ingress.sh scripts/deploy-edge.sh scripts/deploy-edge-component.sh; do
+            bash -n "$script"
+          done

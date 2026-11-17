@@ -56,7 +56,8 @@ jobs:
             terraform -chdir="infra/${root}" validate
             terraform -chdir="infra/${root}" test
           done
-          bash -n scripts/deploy-platform.sh scripts/lib/deploy-platform-functions.sh
+          bash -n scripts/deploy-platform.sh
+          bash -n scripts/lib/deploy-platform-functions.sh
 
   deploy:
     if: github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/develop' && vars.HOMOLOGATION_DEPLOY_ENABLED == 'true')
