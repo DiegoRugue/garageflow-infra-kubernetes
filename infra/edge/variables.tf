@@ -70,3 +70,9 @@ variable "serverless_contract" {
     error_message = "A matching serverless v1 contract identifying live Lambda aliases is required."
   }
 }
+
+variable "phase4_enabled" {
+  type        = bool
+  description = "Enable the Phase 4 public routes and internal Billing target for the final rollout."
+  default     = false
+}

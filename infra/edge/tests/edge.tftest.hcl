@@ -84,3 +84,22 @@ run "reject_wrong_account" {
   }
   expect_failures = [terraform_data.contract_identity]
 }
+
+run "phase4_explicit_routes_and_authorization" {
+  command = apply
+  variables { phase4_enabled = true }
+
+  assert {
+    condition = (
+      length(aws_apigatewayv2_route.routes) == 70
+      && aws_apigatewayv2_route.routes["POST /webhooks/mercado-pago/orders"].authorization_type == "NONE"
+      && alltrue([for route in [
+        "POST /work-orders/{id}/execution/start",
+        "POST /work-orders/{id}/execution/complete",
+        "GET /work-orders/{id}/payment",
+        "GET /me/work-orders/{id}/payment"
+      ] : aws_apigatewayv2_route.routes[route].authorization_type == "CUSTOM"])
+    )
+    error_message = "The Mercado Pago webhook uses signature verification at Billing and all four OS routes require JWT."
+  }
+}

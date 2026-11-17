@@ -1,0 +1,22 @@
+{
+  "POST /work-orders/{id}/execution/start": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /work-orders/{id}/execution/complete": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /work-orders/{id}/payment": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "GET /me/work-orders/{id}/payment": {
+    "integration": "api",
+    "authorization": "CUSTOM"
+  },
+  "POST /webhooks/mercado-pago/orders": {
+    "integration": "api",
+    "authorization": "NONE"
+  }
+}

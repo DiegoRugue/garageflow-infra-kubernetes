@@ -63,6 +63,41 @@ Cada produtor grava revisão imutável antes do contrato estável no S3. Platfor
 
 Branches de deploy: `develop` → `homologation`, `main` → `production`. Estados, nomes, CIDRs e concorrência são separados por ambiente. Criar branches, Environments, secrets e proteção com PR/checks obrigatórios é parte da configuração inicial, não efeito do YAML. A configuração de homologação não deve ser confundida com uma execução já verificada.
 
+## Recursos da Fase 4
+
+O root `infra/phase4-workloads` compartilha o EKS da plataforma e usa um state próprio em `phase4/{environment}/workloads.tfstate`. Ele prepara quatro filas SQS Standard com DLQ, a tabela DynamoDB exclusiva de Execução, os registries ECR dos workers e uma associação de EKS Pod Identity por ServiceAccount.
+
+| Fila | Publica | Consome |
+| --- | --- | --- |
+| `execution-commands` | API de OS | Execução |
+| `execution-results` | Execução | API de OS |
+| `billing-commands` | API de OS | Pagamentos |
+| `billing-results` | Pagamentos | API de OS |
+
+Os nomes dos recursos incluem o ambiente. Antes do apply, confirme que o cluster tem o agente de Pod Identity e que a sessão permite associar as três roles IAM existentes. Cada role precisa confiar em `pods.eks.amazonaws.com`. O output `workload_policies` fornece as permissões de dados por role, incluindo as filas e a tabela. A capacidade da AWS Academy de fornecer essas roles e a autorização de associação deve ser conferida na sessão final.
+
+Na janela de implantação, inicialize com o bucket do ambiente e as mesmas opções de criptografia e lock usadas pelos demais roots. Passe `environment`, `aws_account_id`, `cluster_name` e `workload_role_arns` no arquivo de variáveis fora do checkout. Revise o plano antes de aplicar.
+
+```bash
+terraform -chdir=infra/phase4-workloads init -reconfigure -input=false \
+  -backend-config="bucket=${TF_STATE_BUCKET}" \
+  -backend-config="key=phase4/${DEPLOY_ENVIRONMENT}/workloads.tfstate" \
+  -backend-config="region=us-east-1" -backend-config=encrypt=true -backend-config=use_lockfile=true
+```
+
+Com o namespace `garageflow` existente e o contexto Kubernetes do ambiente selecionado, materialize os três ConfigMaps a partir do output.
+
+```bash
+terraform -chdir=infra/phase4-workloads output -json runtime_config |
+  jq '{apiVersion: "v1", kind: "List", items: [to_entries[] |
+    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: .key, namespace: "garageflow"}, data: .value}]}' |
+  kubectl apply --server-side --field-manager=garageflow-phase4 -f -
+```
+
+O output `ecr_repository_names` fornece o input `ECR_REPOSITORY` de cada worker. Os repositórios e o DynamoDB não contêm dados de outros serviços. O RDS e os segredos de Pagamentos são preparados separadamente.
+
+No momento da entrega, o Environment da plataforma usa `PHASE4_SAGA_ENABLED=true` para que o workflow de ingress acrescente o target de Pagamentos no NodePort `30081` e o workflow de edge publique as rotas adicionais. O ALB interno encaminha somente `POST /webhooks/mercado-pago/orders` para Pagamentos. O health check do target permanece no trecho privado. O trecho público usa o HTTPS do Gateway e o trecho ALB → pod usa HTTP privado. A sequência completa fica na [API de Ordens de Serviço](https://github.com/DiegoRugue/GarageFlow#preparação-do-deploy-da-fase-4).
+
 ## Acesso e documentação das APIs
 
 O contrato platform v1 publica `apiGatewayId`. A implantação edge adiciona o stage `$default` e as rotas. Consulte o ID no contrato do ambiente autorizado e obtenha o endpoint pela API AWS:

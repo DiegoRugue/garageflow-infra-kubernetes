@@ -47,3 +47,9 @@ variable "platform_contract" {
     error_message = "A matching us-east-1 platform v1 contract with two private application subnets is required."
   }
 }
+
+variable "phase4_enabled" {
+  type        = bool
+  description = "Enable the Phase 4 public routes and internal Billing target for the final rollout."
+  default     = false
+}
